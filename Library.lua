@@ -6,9 +6,14 @@ do
 
 	local RawCloneFunction = clonefunc or clonefunction or clone_function
 
-	CloneFunction = RawCloneFunction and function(TargetFunction)
+	local UseRawClone = RawCloneFunction
+	if UseRawClone and debug.info(UseRawClone, "s") ~= "[C]" then
+		UseRawClone = nil
+	end
+
+	CloneFunction = UseRawClone and function(TargetFunction)
 		if typeof(TargetFunction) == "function" then
-			return RawCloneFunction(TargetFunction)
+			return UseRawClone(TargetFunction)
 		end
 		return TargetFunction
 	end or function(TargetFunction)
@@ -31,9 +36,14 @@ do
 
 	local RawNewCClosure = newcclosure
 
-	NewCClosure = RawNewCClosure and function(TargetFunction)
+	local UseRawNewCClosure = RawNewCClosure
+	if UseRawNewCClosure and debug.info(UseRawNewCClosure, "s") ~= "[C]" then
+		UseRawNewCClosure = nil
+	end
+
+	NewCClosure = UseRawNewCClosure and function(TargetFunction)
 		if typeof(TargetFunction) == "function" then
-			local Success, WrappedFunction = pcall(RawNewCClosure, TargetFunction)
+			local Success, WrappedFunction = pcall(UseRawNewCClosure, TargetFunction)
 			if Success and typeof(WrappedFunction) == "function" then
 				return WrappedFunction
 			end
@@ -43,7 +53,8 @@ do
 		return TargetFunction
 	end
 
-	local RawSetClipboard = setclipboard
+
+	local RawSetClipboard = setclipboard or toclipboard or set_clipboard
 
 	SetClipboard = RawSetClipboard and function(Text)
 		if typeof(Text) ~= "string" then
@@ -63,7 +74,7 @@ do
 		return Text
 	end
 
-	local RawGetClipboard = getclipboard
+	local RawGetClipboard = getclipboard or get_clipboard
 
 	GetClipboard = RawGetClipboard and function()
 		local Success, ClipboardText = pcall(RawGetClipboard)
@@ -79,6 +90,7 @@ do
 end
 
 local UserInputService, RunService, ContextActionService, Workspace
+local Drawing = Drawing
 
 do
 	local GetService = CloneFunction(game.GetService)
@@ -92,7 +104,7 @@ end
 local GetMouseLocation, IsMouseButtonPressed, IsKeyDown
 local GetStringForKeyCode, GetKeysPressed, GetMouseButtonsPressed
 local GetDeviceType
-local PreRenderSignalConnect
+local HeartbeatSignalConnect
 local BindCoreActionAtPriority, UnbindCoreAction
 local InputBeganSignalConnect, InputChangedSignalConnect
 local WindowFocusReleasedConnect, WindowFocusedConnect
@@ -109,7 +121,7 @@ do
 	GetMouseButtonsPressed   = CloneFunction(UserInputService.GetMouseButtonsPressed)
 	GetDeviceType            = CloneDeviceType and CloneFunction(GetDeviceType) or function() return "Unknown" end
 
-	PreRenderSignalConnect = CloneFunction(RunService.PreRender.Connect)
+	HeartbeatSignalConnect = CloneFunction(RunService.Heartbeat.Connect)
 
 	BindCoreActionAtPriority = CloneFunction(ContextActionService.BindCoreActionAtPriority)
 	UnbindCoreAction         = CloneFunction(ContextActionService.UnbindCoreAction)
@@ -171,6 +183,51 @@ local SelectedBackend = 0
 local UseImmediateMode        = false
 local DrawingBackendAvailable = false
 
+local DrawingIsNative = false
+
+if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
+	local NativeCheckSuccess, NativeCheckSource = pcall(debug.info, Drawing.new, "s")
+	if NativeCheckSuccess and NativeCheckSource == "[C]" then
+		DrawingIsNative = true
+	end
+end
+
+if not DrawingIsNative then
+	local CustomDrawingLibraryLink = "https://raw.githubusercontent.com/contact-here/Contact/refs/heads/main/DrawingLibrary.lua"
+	local RawHttpGet = game.HttpGet
+	local RawRequestFunction = request or http_request or (syn and syn.request)
+	local FetchedContent
+
+	if RawRequestFunction then
+		local RequestSuccess, RequestResult = pcall(RawRequestFunction, { Url = CustomDrawingLibraryLink, Method = "GET" })
+		if RequestSuccess and RequestResult and (RequestResult.StatusCode == 200 or RequestResult.Status == 200) then
+			FetchedContent = RequestResult.Body
+		end
+	end
+
+	if not FetchedContent and RawHttpGet then
+		local HttpGetSuccess, HttpGetResult = pcall(RawHttpGet, game, CustomDrawingLibraryLink)
+		if HttpGetSuccess then
+			FetchedContent = HttpGetResult
+		end
+	end
+
+	if FetchedContent then
+		local LoadedFunction = loadstring(FetchedContent)
+		if LoadedFunction then
+			local ExecutionSuccess, ExecutionResult = pcall(LoadedFunction)
+			if ExecutionSuccess and typeof(ExecutionResult) == "table" and typeof(ExecutionResult.new) == "function" then
+				Drawing = ExecutionResult
+
+				SetRenderProperty = ExecutionResult.SetRenderProperty
+				GetRenderProperty = ExecutionResult.GetRenderProperty
+				IsRenderObject    = ExecutionResult.IsRenderObject
+				ClearDrawCache    = ExecutionResult.ClearDrawingCache or ExecutionResult.ClearDrawCache
+			end
+		end
+	end
+end
+
 local DrawingImmediateLine            = nil
 local DrawingImmediateCircle          = nil
 local DrawingImmediateFilledCircle    = nil
@@ -192,35 +249,36 @@ if (SelectedBackend == 0 or SelectedBackend == 1) and typeof(DrawingImmediate) =
 	DrawingImmediateText            = typeof(DrawingImmediate.Text)            == "function" and CloneFunction(DrawingImmediate.Text)
 	DrawingImmediateGetPaint        = typeof(DrawingImmediate.GetPaint)        == "function" and CloneFunction(DrawingImmediate.GetPaint)
 
-	if DrawingImmediateLine and debug.info(DrawingImmediateLine, "s") == "[C]" then
+	if DrawingImmediateLine then
 		UseImmediateMode        = true
 		DrawingBackendAvailable = true
 	end
 end
 
-if not DrawingBackendAvailable and (SelectedBackend == 0 or SelectedBackend == 2) then
+if not DrawingBackendAvailable then
 	if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
-		if debug.info(Drawing.new, "s") == "[C]" then
-			UseImmediateMode        = false
-			DrawingBackendAvailable = true
-		end
+		UseImmediateMode        = false
+		DrawingBackendAvailable = true
 	end
 end
 
-local function ClampValue(Value, MinimumBound, MaximumBound)
-	if Value < MinimumBound then 
-		return MinimumBound 
-	end
-
-	if Value > MaximumBound then 
-		return MaximumBound 
-	end
-
-	return Value
-end
 
 local function LerpValue(StartValue, EndValue, Factor)
 	return StartValue + (EndValue - StartValue) * Factor
+end
+
+local function UpdateAnimationFactor(CurrentFactor, TargetState, DeltaTime, Speed)
+	Speed = Speed or 12
+	local TargetFactor = TargetState and 1 or 0
+	if CurrentFactor == TargetFactor then
+		return CurrentFactor
+	end
+	local Difference = TargetFactor - CurrentFactor
+	local Step = Difference * (1 - math.exp(-Speed * DeltaTime))
+	if math.abs(Step) < 0.001 then
+		return TargetFactor
+	end
+	return CurrentFactor + Step
 end
 
 local function IsPointInsideRectangle(TestPoint, RectangleOrigin, RectangleSize)
@@ -235,7 +293,8 @@ local function RandomString(Length)
 	local Result = {}
 
 	for Index = 1, Length do
-		Result[Index] = string.sub(Characters, math.random(1, #Characters), math.random(1, #Characters))
+		local RandomIndex = math.random(1, #Characters)
+		Result[Index] = string.sub(Characters, RandomIndex, RandomIndex)
 	end
 
 	return table.concat(Result)
@@ -453,6 +512,49 @@ local function ClipHorizontalLineToYRange(From, To, MinY, MaxY)
 	end
 end
 
+local function GetSectionAllowedYRange(Section, Window, WindowPositionY)
+	local ViewportStart = WindowPositionY + Theme.TitleBarHeight
+	local ViewportEnd = ViewportStart + Window._VisibleHeight
+	local AllowedMinY = ViewportStart
+	local AllowedMaxY = ViewportEnd
+
+	if Section._MaxHeight then
+		local ClippedHeight = Section._ClippedHeight or Section._ContentHeight or 0
+		if ClippedHeight > 0 then
+			local SectionAbsoluteTop = WindowPositionY + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
+			local SectionAbsoluteBottom = WindowPositionY + Section._PositionY - Window._ScrollOffset + ClippedHeight
+			AllowedMinY = math.max(AllowedMinY, SectionAbsoluteTop)
+			AllowedMaxY = math.min(AllowedMaxY, SectionAbsoluteBottom)
+		end
+	end
+
+	return AllowedMinY, AllowedMaxY
+end
+
+local function IsElementVisibleInViewport(ElementAbsolutePositionY, ElementHeight, Section, Window, WindowPositionY)
+	if not Window._Visible then
+		return false
+	end
+
+	local ViewportStart = WindowPositionY + Theme.TitleBarHeight
+	local ViewportEnd = ViewportStart + Window._VisibleHeight
+	local InViewport = (ElementAbsolutePositionY + ElementHeight > ViewportStart) and (ElementAbsolutePositionY < ViewportEnd)
+	if not InViewport then
+		return false
+	end
+
+	if Section._MaxHeight then
+		local ClippedHeight = Section._ClippedHeight or Section._ContentHeight or 0
+		if ClippedHeight > 0 then
+			local SectionAbsoluteTop = WindowPositionY + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
+			local SectionAbsoluteBottom = WindowPositionY + Section._PositionY - Window._ScrollOffset + ClippedHeight
+			return (ElementAbsolutePositionY + ElementHeight > SectionAbsoluteTop) and (ElementAbsolutePositionY < SectionAbsoluteBottom)
+		end
+	end
+
+	return true
+end
+
 local function ApplyDrawingProperties(DrawingObject, Properties)
 	if not DrawingObject then 
 		return 
@@ -465,11 +567,11 @@ end
 
 local function DestroyTrackedDrawingTable(DrawingTable)
 	for ObjectIndex = #DrawingTable, 1, -1 do
-		pcall(function()
-			DrawingTable[ObjectIndex]:Destroy()
-		end)
-
-		table.remove(DrawingTable, ObjectIndex)
+		local DrawingObject = DrawingTable[ObjectIndex]
+		if DrawingObject then
+			pcall(DrawingObject.Destroy, DrawingObject)
+		end
+		DrawingTable[ObjectIndex] = nil
 	end
 end
 
@@ -484,6 +586,15 @@ local function RemoveTrackedDrawing(TrackedDrawingsTable, DrawingObject)
 
 			break
 		end
+	end
+end
+
+local function DestroyDrawing(DrawingObject, TrackedDrawingsTable)
+	if DrawingObject then
+		if TrackedDrawingsTable then
+			RemoveTrackedDrawing(TrackedDrawingsTable, DrawingObject)
+		end
+		pcall(DrawingObject.Destroy, DrawingObject)
 	end
 end
 
@@ -612,6 +723,8 @@ Library._Visible = true
 Library.ToggleKey = Enum.KeyCode.RightControl
 
 Library.Connections = {}
+
+Library.Theme = Theme
 
 local _CachedPreferredInput = nil
 
@@ -810,7 +923,7 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 
 					local RepeatConnection
 
-					RepeatConnection = PreRenderSignalConnect(RunService.PreRender, NewCClosure(function()
+					RepeatConnection = HeartbeatSignalConnect(RunService.Heartbeat, NewCClosure(function()
 						if not FocusedBox._IsFocused or not IsKeyDown(UserInputService, Input.KeyCode) or not Library._Visible or not Window._Visible or Window._Destroyed then
 							RepeatConnection:Disconnect()
 							
@@ -840,6 +953,25 @@ Library.Fonts = (typeof(Drawing) == "table" and Drawing.Fonts) or {
 }
 
 Library.ActiveNotifications = {}
+
+function Library:Destroy()
+	for ConnectionIndex, Connection in ipairs(Library.Connections) do
+		if Connection then
+			pcall(Connection.Disconnect, Connection)
+		end
+	end
+	Library.Connections = {}
+
+	for WindowIndex, Window in ipairs(Library._Windows) do
+		if Window and not Window._Destroyed then
+			pcall(Window.Destroy, Window)
+		end
+	end
+	Library._Windows = {}
+
+	DestroyTrackedDrawingTable(NotificationTrackedDrawings)
+	NotificationTrackedDrawings = {}
+end
 
 function Library:ShowNotification(NotificationText, WindowOrPosition)
 	if not DrawingBackendAvailable then
@@ -918,25 +1050,10 @@ function Library:ShowNotification(NotificationText, WindowOrPosition)
 		NotificationEntry.TextLabel = NotificationTextLabel
 
 		task.delay(Theme.NotificationDuration, function()
-			pcall(function()
-				RemoveTrackedDrawing(NotificationTrackedDrawings, NotificationBackground)
-				NotificationBackground:Destroy()
-			end)
-
-			pcall(function()
-				RemoveTrackedDrawing(NotificationTrackedDrawings, NotificationBorder)
-				NotificationBorder:Destroy()
-			end)
-
-			pcall(function()
-				RemoveTrackedDrawing(NotificationTrackedDrawings, NotificationAccentLine)
-				NotificationAccentLine:Destroy()
-			end)
-
-			pcall(function()
-				RemoveTrackedDrawing(NotificationTrackedDrawings, NotificationTextLabel)
-				NotificationTextLabel:Destroy()
-			end)
+			DestroyDrawing(NotificationBackground, NotificationTrackedDrawings)
+			DestroyDrawing(NotificationBorder, NotificationTrackedDrawings)
+			DestroyDrawing(NotificationAccentLine, NotificationTrackedDrawings)
+			DestroyDrawing(NotificationTextLabel, NotificationTrackedDrawings)
 		end)
 	end
 
@@ -1322,6 +1439,8 @@ function Library:CreateWindow(WindowConfig)
 		if not DrawingBackendAvailable then return end
 
 		local WindowPosition = Window._Position
+		local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
+		local ViewportEnd = ViewportStart + Window._VisibleHeight
 
 		local SearchBarHeightOffset = 0
 		if Window._SearchActive then
@@ -1394,18 +1513,7 @@ function Library:CreateWindow(WindowConfig)
 					local ElementAbsolutePosition = WindowPosition + Vector2.new(Element._PositionX, Element._PositionY - Window._ScrollOffset)
 					local ElementAbsoluteSize = Vector2.new(Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0), Element._Height)
 
-					local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
-					local ViewportEnd = ViewportStart + Window._VisibleHeight
-					local IsElementVisible = (ElementAbsolutePosition.Y + Element._Height > ViewportStart) and (ElementAbsolutePosition.Y < ViewportEnd) and Window._Visible
-
-					if Section._MaxHeight and IsElementVisible then
-						local ClippedHeight = Section._ClippedHeight or Section._ContentHeight or 0
-						if ClippedHeight > 0 then
-							local SectionAbsoluteTop = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
-							local SectionAbsoluteBottom = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + ClippedHeight
-							IsElementVisible = (ElementAbsolutePosition.Y + Element._Height > SectionAbsoluteTop) and (ElementAbsolutePosition.Y < SectionAbsoluteBottom)
-						end
-					end
+					local IsElementVisible = IsElementVisibleInViewport(ElementAbsolutePosition.Y, Element._Height, Section, Window, WindowPosition.Y)
 
 					if Element._Type == "TextLabel" then
 
@@ -1420,20 +1528,10 @@ function Library:CreateWindow(WindowConfig)
 							Element:_RebuildLineDrawings(Element._WrappedLines or { Element._Text })
 						end
 
-						local AllowedMinY = ViewportStart
-						local AllowedMaxY = ViewportEnd
-						if Section._MaxHeight then
-							local ClippedHeight = Section._ClippedHeight or Section._ContentHeight or 0
-							if ClippedHeight > 0 then
-								local SectionAbsoluteTop = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
-								local SectionAbsoluteBottom = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + ClippedHeight
-								AllowedMinY = math.max(AllowedMinY, SectionAbsoluteTop)
-								AllowedMaxY = math.min(AllowedMaxY, SectionAbsoluteBottom)
-							end
-						end
+						local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
 
 						if Element._AccentLineDrawing then
-							local Alpha = Element._IsHovered and 0.85 or 0.4
+							local Alpha = LerpValue(0.4, 0.85, Element._HoverFactor or 0)
 							local FromPos = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 4)
 							local ToPos = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 4)
 							local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(FromPos, ToPos, AllowedMinY, AllowedMaxY)
@@ -1441,7 +1539,7 @@ function Library:CreateWindow(WindowConfig)
 								ApplyDrawingProperties(Element._AccentLineDrawing, {
 									From = ClippedFrom,
 									To = ClippedTo,
-									Thickness = Element._IsHovered and 2 or 1,
+									Thickness = LerpValue(1, 2, Element._HoverFactor or 0),
 									Transparency = Alpha,
 									Visible = IsElementVisible,
 								})
@@ -1453,7 +1551,7 @@ function Library:CreateWindow(WindowConfig)
 						local VerticalPadding   = LabelVerticalPadding(Theme.ElementFontSize)
 						local LineHeight = FontLineHeight(Theme.ElementFontSize)
 						local HorizontalInset  = FontHorizontalInset(Theme.ElementFontSize)
-						local TextColor = Element._IsHovered and Theme.LabelTextHover or Theme.LabelText
+						local TextColor = Theme.LabelText:Lerp(Theme.LabelTextHover, Element._HoverFactor or 0)
 						for LineIndex, LineObj in ipairs(Element._LineDrawings) do
 							local LineY = ElementAbsolutePosition.Y + VerticalPadding + (LineIndex - 1) * LineHeight
 							local IsLineVisible = IsElementVisible and (LineY >= AllowedMinY) and (LineY + LineHeight <= AllowedMaxY)
@@ -1467,7 +1565,7 @@ function Library:CreateWindow(WindowConfig)
 							})
 						end
 					elseif Element._Type == "TextButton" then
-						local ButtonBackgroundColor = Element._IsHovered and Theme.ButtonBackgroundHover or Theme.ButtonBackground
+						local ButtonBackgroundColor = Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
 						if Element._BackgroundDrawing then
 							ApplyDrawingProperties(Element._BackgroundDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = ButtonBackgroundColor, Visible = IsElementVisible })
 						end
@@ -1482,14 +1580,23 @@ function Library:CreateWindow(WindowConfig)
 						end
 
 						if Element._AccentLineDrawing then
-							ApplyDrawingProperties(Element._AccentLineDrawing, {
-								From = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3),
-								To = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3),
-								Visible = IsElementVisible and Element._IsHovered,
-							})
+							local AccentFrom = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3)
+							local AccentTo = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3)
+							local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
+							local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(AccentFrom, AccentTo, AllowedMinY, AllowedMaxY)
+							if ClippedFrom and ClippedTo and (Element._HoverFactor or 0) > 0.01 then
+								ApplyDrawingProperties(Element._AccentLineDrawing, {
+									From = ClippedFrom,
+									To = ClippedTo,
+									Transparency = Element._HoverFactor or 0,
+									Visible = IsElementVisible,
+								})
+							else
+								ApplyDrawingProperties(Element._AccentLineDrawing, { Visible = false })
+							end
 						end
 					elseif Element._Type == "Toggle" then
-						local ToggleBackgroundColor = Element._IsHovered and Theme.ButtonBackgroundHover or Theme.ButtonBackground
+						local ToggleBackgroundColor = Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
 						if Element._BackgroundDrawing then
 							ApplyDrawingProperties(Element._BackgroundDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = ToggleBackgroundColor, Visible = IsElementVisible })
 						end
@@ -1505,15 +1612,25 @@ function Library:CreateWindow(WindowConfig)
 						if Element._IndicatorDrawing then
 							local PipX = ElementAbsolutePosition.X + ElementAbsoluteSize.X - 14
 							local PipY = ElementAbsolutePosition.Y + Element._Height / 2
-							ApplyDrawingProperties(Element._IndicatorDrawing, { Position = Vector2.new(PipX, PipY), Visible = IsElementVisible })
+							local PipColor = Color3.fromRGB(80, 75, 100):Lerp(Color3.fromRGB(80, 220, 120), Element._ActiveFactor or 0)
+							ApplyDrawingProperties(Element._IndicatorDrawing, { Position = Vector2.new(PipX, PipY), Color = PipColor, Visible = IsElementVisible })
 						end
 
 						if Element._AccentLineDrawing then
-							ApplyDrawingProperties(Element._AccentLineDrawing, {
-								From = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3),
-								To = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3),
-								Visible = IsElementVisible and Element._Value == true,
-							})
+							local AccentFrom = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3)
+							local AccentTo = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3)
+							local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
+							local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(AccentFrom, AccentTo, AllowedMinY, AllowedMaxY)
+							if ClippedFrom and ClippedTo and (Element._ActiveFactor or 0) > 0.01 then
+								ApplyDrawingProperties(Element._AccentLineDrawing, {
+									From = ClippedFrom,
+									To = ClippedTo,
+									Transparency = Element._ActiveFactor or 0,
+									Visible = IsElementVisible,
+								})
+							else
+								ApplyDrawingProperties(Element._AccentLineDrawing, { Visible = false })
+							end
 						end
 					elseif Element._Type == "TextBox" then
 
@@ -1528,11 +1645,9 @@ function Library:CreateWindow(WindowConfig)
 							Element._CursorBlinkTime = 0
 						end
 
-						local TextBoxBackgroundColor = Element._IsFocused and Theme.TextBoxBackground
-							or (Element._IsHovered and Theme.TextBoxBackgroundHover or Theme.TextBoxBackground)
-						local TextBoxBorderColor = Element._IsFocused and Theme.TextBoxBorderFocused
-							or (Element._IsHovered and Theme.TextBoxBorder or Theme.TextBoxBorder)
-						local TextBoxBorderThickness = Element._IsFocused and 2 or 1
+						local TextBoxBackgroundColor = Theme.TextBoxBackground:Lerp(Theme.TextBoxBackgroundHover, Element._HoverFactor or 0)
+						local TextBoxBorderColor = Theme.TextBoxBorder:Lerp(Theme.TextBoxBorderFocused, Element._FocusFactor or 0)
+						local TextBoxBorderThickness = LerpValue(1, 2, Element._FocusFactor or 0)
 
 						if Element._BackgroundDrawing then
 							ApplyDrawingProperties(Element._BackgroundDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = TextBoxBackgroundColor, Visible = IsElementVisible })
@@ -1542,11 +1657,20 @@ function Library:CreateWindow(WindowConfig)
 						end
 
 						if Element._AccentLineDrawing then
-							ApplyDrawingProperties(Element._AccentLineDrawing, {
-								From = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3),
-								To = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3),
-								Visible = IsElementVisible and Element._IsFocused,
-							})
+							local AccentFrom = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3)
+							local AccentTo = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3)
+							local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
+							local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(AccentFrom, AccentTo, AllowedMinY, AllowedMaxY)
+							if ClippedFrom and ClippedTo and (Element._FocusFactor or 0) > 0.01 then
+								ApplyDrawingProperties(Element._AccentLineDrawing, {
+									From = ClippedFrom,
+									To = ClippedTo,
+									Transparency = Element._FocusFactor or 0,
+									Visible = IsElementVisible,
+								})
+							else
+								ApplyDrawingProperties(Element._AccentLineDrawing, { Visible = false })
+							end
 						end
 
 						if Element._LabelDrawing then
@@ -1610,9 +1734,9 @@ function Library:CreateWindow(WindowConfig)
 							end
 						end
 					elseif Element._Type == "Dropdown" then
-						local DropdownBackgroundColor = Element._IsHovered and Theme.DropdownHover or Theme.DropdownBackground
-						local DropdownBorderColor = (Element._Expanded and Theme.SectionText) or (Element._IsHovered and Theme.DropdownBorderHover) or Theme.DropdownBorder
-						local DropdownBorderThickness = (Element._Expanded or Element._IsHovered) and 2 or 1
+						local DropdownBackgroundColor = Theme.DropdownBackground:Lerp(Theme.DropdownHover, Element._HoverFactor or 0)
+						local DropdownBorderColor = Theme.DropdownBorder:Lerp(Theme.DropdownBorderHover, Element._HoverFactor or 0):Lerp(Theme.SectionText, Element._ExpandFactor or 0)
+						local DropdownBorderThickness = LerpValue(1, 2, math.max(Element._HoverFactor or 0, Element._ExpandFactor or 0))
 						if Element._BackgroundDrawing then
 							ApplyDrawingProperties(Element._BackgroundDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = DropdownBackgroundColor, Visible = IsElementVisible })
 						end
@@ -1633,17 +1757,27 @@ function Library:CreateWindow(WindowConfig)
 						end
 
 						if Element._AccentLineDrawing then
-							ApplyDrawingProperties(Element._AccentLineDrawing, {
-								From = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3),
-								To = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3),
-								Visible = IsElementVisible and Element._IsHovered and not Element._Expanded,
-							})
+							local AccentFrom = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3)
+							local AccentTo = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3)
+							local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
+							local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(AccentFrom, AccentTo, AllowedMinY, AllowedMaxY)
+							local AccentAlpha = (Element._HoverFactor or 0) * (1 - (Element._ExpandFactor or 0))
+							if ClippedFrom and ClippedTo and AccentAlpha > 0.01 then
+								ApplyDrawingProperties(Element._AccentLineDrawing, {
+									From = ClippedFrom,
+									To = ClippedTo,
+									Transparency = AccentAlpha,
+									Visible = IsElementVisible,
+								})
+							else
+								ApplyDrawingProperties(Element._AccentLineDrawing, { Visible = false })
+							end
 						end
 
 						if Element._Expanded then
 							for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects) do
 								local ItemAbsolutePosition = WindowPosition + Vector2.new(ItemData._PositionX, ItemData._PositionY - Window._ScrollOffset)
-								local IsItemVisible = (ItemAbsolutePosition.Y + Theme.ElementHeight > ViewportStart) and (ItemAbsolutePosition.Y < ViewportEnd) and Window._Visible
+								local IsItemVisible = IsElementVisibleInViewport(ItemAbsolutePosition.Y, Theme.ElementHeight, Section, Window, WindowPosition.Y)
 								local IsItemHovered = IsPointInsideRectangle(GetMouseLocation(UserInputService), ItemAbsolutePosition, Vector2.new(ItemData._Width, Theme.ElementHeight))
 
 								if ItemData.BackgroundDrawing then
@@ -1671,9 +1805,8 @@ function Library:CreateWindow(WindowConfig)
 							end
 						end
 					elseif Element._Type == "Slider" then
-						local IsSliderActive = (Window._ActiveSlider == Element)
-						local SliderLabelColor = Element._IsHovered and Theme.TitleBarText or Theme.SliderText
-						local ValueColor = IsSliderActive and Color3.fromRGB(220, 200, 255) or Theme.SectionText
+						local SliderLabelColor = Theme.SliderText:Lerp(Theme.TitleBarText, Element._HoverFactor or 0)
+						local ValueColor = Theme.SectionText:Lerp(Color3.fromRGB(220, 200, 255), Element._ActiveFactor or 0)
 						if Element._LabelDrawing then
 							ApplyDrawingProperties(Element._LabelDrawing, { Position = ElementAbsolutePosition, Color = SliderLabelColor, Visible = IsElementVisible })
 						end
@@ -1685,7 +1818,7 @@ function Library:CreateWindow(WindowConfig)
 							})
 						end
 
-						local TrackHeight = (Element._IsHovered or IsSliderActive) and 10 or 8
+						local TrackHeight = LerpValue(8, 10, Element._HoverFactor or 0)
 						local TrackAbsolutePosition = ElementAbsolutePosition + Vector2.new(0, Theme.ElementFontSize + 5)
 						local TrackAbsoluteSize = Vector2.new(Element._TrackTotalWidth, TrackHeight)
 
@@ -1700,7 +1833,7 @@ function Library:CreateWindow(WindowConfig)
 						if Range == 0 then Range = 1 end
 						local NormalizedValue = (Element._Value - Element._MinValue) / Range
 						local FillWidth = math.floor(Element._TrackTotalWidth * NormalizedValue)
-						local FillColor = (IsSliderActive or Element._IsHovered) and Theme.SliderTrackFillHover or Theme.SliderTrackFill
+						local FillColor = Theme.SliderTrackFill:Lerp(Theme.SliderTrackFillHover, Element._HoverFactor or 0)
 
 						if Element._TrackFillDrawing then
 							ApplyDrawingProperties(Element._TrackFillDrawing, {
@@ -1710,8 +1843,8 @@ function Library:CreateWindow(WindowConfig)
 								Visible = IsElementVisible,
 							})
 						end
-						local ThumbRadius = (Element._IsThumbHovered or IsSliderActive) and 9 or 7
-						local ThumbColor = (Element._IsThumbHovered or IsSliderActive) and Theme.SliderThumbHover or Theme.SliderThumb
+						local ThumbRadius = LerpValue(7, 9, Element._ThumbHoverFactor or 0)
+						local ThumbColor = Theme.SliderThumb:Lerp(Theme.SliderThumbHover, Element._ThumbHoverFactor or 0)
 						local ThumbCenter = TrackAbsolutePosition + Vector2.new(FillWidth, TrackHeight / 2)
 						if Element._ThumbDrawing then
 							ApplyDrawingProperties(Element._ThumbDrawing, {
@@ -1730,27 +1863,36 @@ function Library:CreateWindow(WindowConfig)
 							})
 						end
 					elseif Element._Type == "ColorPicker" then
-						local ColorPickerRowHovered = Element._IsHovered
-
 						if Element._HoverBackgroundDrawing then
 							ApplyDrawingProperties(Element._HoverBackgroundDrawing, {
 								Position = ElementAbsolutePosition,
 								Size = ElementAbsoluteSize,
-								Visible = IsElementVisible and ColorPickerRowHovered,
+								Transparency = (Element._HoverFactor or 0) * 0.55,
+								Visible = IsElementVisible and (Element._HoverFactor or 0) > 0.01,
 							})
 						end
 
 						if Element._AccentLineDrawing then
-							ApplyDrawingProperties(Element._AccentLineDrawing, {
-								From = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3),
-								To = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3),
-								Visible = IsElementVisible and ColorPickerRowHovered,
-							})
+							local AccentFrom = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3)
+							local AccentTo = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3)
+							local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
+							local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(AccentFrom, AccentTo, AllowedMinY, AllowedMaxY)
+							if ClippedFrom and ClippedTo and (Element._HoverFactor or 0) > 0.01 then
+								ApplyDrawingProperties(Element._AccentLineDrawing, {
+									From = ClippedFrom,
+									To = ClippedTo,
+									Transparency = Element._HoverFactor or 0,
+									Visible = IsElementVisible,
+								})
+							else
+								ApplyDrawingProperties(Element._AccentLineDrawing, { Visible = false })
+							end
 						end
 						if Element._LabelDrawing then
+							local ColorPickerTextColor = Theme.LabelText:Lerp(Theme.LabelTextHover, Element._HoverFactor or 0)
 							ApplyDrawingProperties(Element._LabelDrawing, {
 								Position = ElementAbsolutePosition + Vector2.new(6, (Element._Height - Theme.ElementFontSize) / 2),
-								Color = ColorPickerRowHovered and Theme.LabelTextHover or Theme.LabelText,
+								Color = ColorPickerTextColor,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1766,18 +1908,21 @@ function Library:CreateWindow(WindowConfig)
 							if Element._ChevronDrawing then
 								ApplyDrawingProperties(Element._ChevronDrawing, {
 									Position = Vector2.new(SwatchAbsolutePosition.X - 14, SwatchAbsolutePosition.Y + (SwatchSize - Theme.ElementFontSize) / 2),
-									Visible = IsElementVisible and ColorPickerRowHovered,
+									Transparency = (Element._HoverFactor or 0) * 0.85,
+									Visible = IsElementVisible and (Element._HoverFactor or 0) > 0.01,
 								})
 							end
 						end
 						if Element._SwatchBorderDrawing then
 							local SwatchSize = Theme.ColorSwatchSize
 							local SwatchAbsolutePosition = WindowPosition + Vector2.new(Element._SwatchPositionX, Element._SwatchPositionY - Window._ScrollOffset)
+							local SwatchBorderColor = Theme.ColorPickerBorder:Lerp(Theme.ColorPickerSwatchHover, Element._HoverFactor or 0)
+							local SwatchBorderThick = LerpValue(1, 2, Element._HoverFactor or 0)
 							ApplyDrawingProperties(Element._SwatchBorderDrawing, {
 								Position = SwatchAbsolutePosition,
 								Size = Vector2.new(SwatchSize, SwatchSize),
-								Color = ColorPickerRowHovered and Theme.ColorPickerSwatchHover or Theme.ColorPickerBorder,
-								Thickness = ColorPickerRowHovered and 2 or 1,
+								Color = SwatchBorderColor,
+								Thickness = SwatchBorderThick,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1803,8 +1948,6 @@ function Library:CreateWindow(WindowConfig)
 				local SectionFullSize = Vector2.new(Section._Width, Section._ContentHeight)
 				local SectionHeaderSize = Vector2.new(Section._Width, Theme.ElementHeight)
 
-				local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
-				local ViewportEnd = ViewportStart + Window._VisibleHeight
 				local IsSectionVisible = (SectionAbsolutePosition.Y + Section._ContentHeight > ViewportStart) and (SectionAbsolutePosition.Y < ViewportEnd) and Window._Visible
 
 				local CurrentMousePos = GetMouseLocation(UserInputService)
@@ -1820,7 +1963,7 @@ function Library:CreateWindow(WindowConfig)
 				end
 
 				if Section._Border then
-					local BorderColor = Section._IsHovered and Theme.WindowBorderHover or Theme.WindowBorder
+					local BorderColor = Theme.WindowBorder:Lerp(Theme.WindowBorderHover, Section._HoverFactor or 0)
 					local ClippedPos, ClippedSize = ClipRectangleToYRange(SectionAbsolutePosition, SectionFullSize, ViewportStart, ViewportEnd)
 					if ClippedPos and ClippedSize then
 						ApplyDrawingProperties(Section._Border, { Position = ClippedPos, Size = ClippedSize, Color = BorderColor, Visible = IsSectionVisible })
@@ -1830,7 +1973,7 @@ function Library:CreateWindow(WindowConfig)
 				end
 
 				if Section._Background then
-					local HeaderBg = Section._IsHovered and Theme.SectionBackgroundHover or Theme.SectionBackground
+					local HeaderBg = Theme.SectionBackground:Lerp(Theme.SectionBackgroundHover, Section._HoverFactor or 0)
 					local ClippedPos, ClippedSize = ClipRectangleToYRange(SectionAbsolutePosition, SectionHeaderSize, ViewportStart, ViewportEnd)
 					if ClippedPos and ClippedSize then
 						ApplyDrawingProperties(Section._Background, { Position = ClippedPos, Size = ClippedSize, Color = HeaderBg, Visible = IsSectionVisible })
@@ -1840,7 +1983,7 @@ function Library:CreateWindow(WindowConfig)
 				end
 
 				if Section._AccentLine then
-					local AccentAlpha = Section._IsHovered and 1 or 0.7
+					local AccentAlpha = LerpValue(0.7, 1, Section._HoverFactor or 0)
 					local FromPos = Vector2.new(SectionAbsolutePosition.X, SectionAbsolutePosition.Y + Theme.ElementHeight)
 					local ToPos = Vector2.new(SectionAbsolutePosition.X + Section._Width, SectionAbsolutePosition.Y + Theme.ElementHeight)
 					local ClippedFrom, ClippedTo = ClipHorizontalLineToYRange(FromPos, ToPos, ViewportStart, ViewportEnd)
@@ -1848,7 +1991,7 @@ function Library:CreateWindow(WindowConfig)
 						ApplyDrawingProperties(Section._AccentLine, {
 							From = ClippedFrom,
 							To = ClippedTo,
-							Thickness = Section._IsHovered and 2 or 1,
+							Thickness = LerpValue(1, 2, Section._HoverFactor or 0),
 							Transparency = AccentAlpha,
 							Visible = IsSectionVisible,
 						})
@@ -1858,7 +2001,7 @@ function Library:CreateWindow(WindowConfig)
 				end
 
 				if Section._LeftAccentLine then
-					local LeftAccentColor = Section._IsHovered and Theme.SectionTextHover or Theme.TitleBarSeparator
+					local LeftAccentColor = Theme.TitleBarSeparator:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local FromPos = Vector2.new(SectionAbsolutePosition.X, SectionAbsolutePosition.Y)
 					local ToPos = Vector2.new(SectionAbsolutePosition.X, SectionAbsolutePosition.Y + Section._ContentHeight)
 					local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(FromPos, ToPos, ViewportStart, ViewportEnd)
@@ -1884,8 +2027,7 @@ function Library:CreateWindow(WindowConfig)
 					local ScrollProgress = Section._SectionScrollOffset / Section._SectionMaxScroll
 					local HandlePositionY = ScrollbarPositionY + (ScrollbarHeight - HandleHeight) * ScrollProgress
 
-					local IsScrollActive = Section._ScrollbarHovered or Section._DraggingScrollbar
-					local ScrollHandleColor = IsScrollActive and Theme.ScrollbarHandleHover or Theme.ScrollbarHandle
+					local ScrollHandleColor = Theme.ScrollbarHandle:Lerp(Theme.ScrollbarHandleHover, Section._ScrollbarHoverFactor or 0)
 
 					if Section._ScrollbarTrack then
 						local TrackPos, TrackSize = ClipRectangleToYRange(
@@ -1935,7 +2077,7 @@ function Library:CreateWindow(WindowConfig)
 					local PositionY = SectionAbsolutePosition.Y
 					local Width = SectionFullSize.X
 					local Height = SectionFullSize.Y
-					local BracketColor = Section._IsHovered and Theme.SectionTextHover or Theme.TitleBarSeparator
+					local BracketColor = Theme.TitleBarSeparator:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 
 					local From1, To1 = ClipHorizontalLineToYRange(Vector2.new(PositionX, PositionY), Vector2.new(PositionX + 6, PositionY), ViewportStart, ViewportEnd)
 					if From1 and To1 then ApplyDrawingProperties(Section._CornerBrackets[1], { From = From1, To = To1, Color = BracketColor, Visible = IsSectionVisible }) else ApplyDrawingProperties(Section._CornerBrackets[1], { Visible = false }) end
@@ -1954,7 +2096,7 @@ function Library:CreateWindow(WindowConfig)
 					local PositionX = SectionAbsolutePosition.X
 					local PositionY = SectionAbsolutePosition.Y
 					local Width = SectionFullSize.X
-					local LeftAccentColor = Section._IsHovered and Theme.SectionTextHover or Theme.TitleBarSeparator
+					local LeftAccentColor = Theme.TitleBarSeparator:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					if PositionY >= ViewportStart and PositionY + 10 <= ViewportEnd then
 						ApplyDrawingProperties(Section._TopRightTechLine, {
 							From = Vector2.new(PositionX + Width - 10, PositionY),
@@ -1968,7 +2110,7 @@ function Library:CreateWindow(WindowConfig)
 				end
 
 				if Section._TextLabel then
-					local TitleColor = Section._IsHovered and Theme.SectionTextHover or Theme.SectionText
+					local TitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionAbsolutePosition.Y + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					local IsTitleVisible = IsSectionVisible and (TitleY >= ViewportStart) and (TitleY + Theme.SectionFontSize <= ViewportEnd)
 					ApplyDrawingProperties(Section._TextLabel, {
@@ -2239,8 +2381,6 @@ function Library:CreateWindow(WindowConfig)
 					Window._HighlightedElement = nil
 					ApplyDrawingProperties(Window._ElementHighlightDrawing, { Visible = false })
 				else
-					local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
-					local ViewportEnd = ViewportStart + Window._VisibleHeight
 					local HighlightAlpha = math.clamp(1 - (ElapsedTime / 2.0), 0, 1)
 					local HighlightAbsolutePosition = WindowPosition + Vector2.new(HighlightElement._PositionX, HighlightElement._PositionY - Window._ScrollOffset)
 					local HighlightAbsoluteSize = Vector2.new(HighlightElement._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0), HighlightElement._Height)
@@ -2450,7 +2590,7 @@ function Library:CreateWindow(WindowConfig)
 
 			local function DestroyLineDrawings()
 				for LineIndex, LineObj in ipairs(Element._LineDrawings) do
-					pcall(function() LineObj:Destroy() end)
+					DestroyDrawing(LineObj, WindowTrackedDrawings)
 				end
 				Element._LineDrawings = {}
 			end
@@ -2799,7 +2939,7 @@ function Library:CreateWindow(WindowConfig)
 
 			local function SnapToIncrement(RawValue)
 				local SnappedValue = math.floor((RawValue - Element._MinValue) / Element._IncrementStep + 0.5) * Element._IncrementStep + Element._MinValue
-				return ClampValue(SnappedValue, Element._MinValue, Element._MaxValue)
+				return math.clamp(SnappedValue, Element._MinValue, Element._MaxValue)
 			end
 
 			if not UseImmediateMode and DrawingBackendAvailable then
@@ -2855,7 +2995,7 @@ function Library:CreateWindow(WindowConfig)
 
 			function Element:_UpdateValueFromMousePosition(MousePositionX)
 				local AbsoluteTrackPositionX = Window._Position.X + Element._TrackPositionX
-				local NormalizedFactor = ClampValue(
+				local NormalizedFactor = math.clamp(
 					(MousePositionX - AbsoluteTrackPositionX) / Element._TrackTotalWidth, 0, 1
 				)
 				local InterpolatedValue = LerpValue(Element._MinValue, Element._MaxValue, NormalizedFactor)
@@ -3029,20 +3169,17 @@ function Library:CreateWindow(WindowConfig)
 			end
 
 			function Element:_DestroyPopupDrawings()
-				local function SafeDestroyDrawing(DrawingObject)
-					if DrawingObject then pcall(function() DrawingObject:Destroy() end) end
-				end
-				SafeDestroyDrawing(Element._PopupBgDrawing)
-				SafeDestroyDrawing(Element._PopupBorderDrawing)
-				SafeDestroyDrawing(Element._PopupHeaderDrawing)
-				SafeDestroyDrawing(Element._PopupTitleDrawing)
-				SafeDestroyDrawing(Element._PopupSaveBackground)
-				SafeDestroyDrawing(Element._PopupSaveText)
-				SafeDestroyDrawing(Element._PopupExitBackground)
-				SafeDestroyDrawing(Element._PopupExitText)
+				DestroyDrawing(Element._PopupBgDrawing, WindowTrackedDrawings)
+				DestroyDrawing(Element._PopupBorderDrawing, WindowTrackedDrawings)
+				DestroyDrawing(Element._PopupHeaderDrawing, WindowTrackedDrawings)
+				DestroyDrawing(Element._PopupTitleDrawing, WindowTrackedDrawings)
+				DestroyDrawing(Element._PopupSaveBackground, WindowTrackedDrawings)
+				DestroyDrawing(Element._PopupSaveText, WindowTrackedDrawings)
+				DestroyDrawing(Element._PopupExitBackground, WindowTrackedDrawings)
+				DestroyDrawing(Element._PopupExitText, WindowTrackedDrawings)
 				for SwatchIndex, SwatchPair in ipairs(Element._PopupSwatchDrawings or {}) do
-					SafeDestroyDrawing(SwatchPair.Fill)
-					SafeDestroyDrawing(SwatchPair.Border)
+					DestroyDrawing(SwatchPair.Fill, WindowTrackedDrawings)
+					DestroyDrawing(SwatchPair.Border, WindowTrackedDrawings)
 				end
 				Element._PopupBgDrawing      = nil
 				Element._PopupBorderDrawing  = nil
@@ -3128,30 +3265,10 @@ function Library:CreateWindow(WindowConfig)
 
 		for EntryIndex = #Window._ActiveNotifications, 1, -1 do
 			local Entry = Window._ActiveNotifications[EntryIndex]
-			if Entry.Background then
-				pcall(function()
-					RemoveTrackedDrawing(NotificationTrackedDrawings, Entry.Background)
-					Entry.Background:Destroy()
-				end)
-			end
-			if Entry.Border then
-				pcall(function()
-					RemoveTrackedDrawing(NotificationTrackedDrawings, Entry.Border)
-					Entry.Border:Destroy()
-				end)
-			end
-			if Entry.AccentLine then
-				pcall(function()
-					RemoveTrackedDrawing(NotificationTrackedDrawings, Entry.AccentLine)
-					Entry.AccentLine:Destroy()
-				end)
-			end
-			if Entry.TextLabel then
-				pcall(function()
-					RemoveTrackedDrawing(NotificationTrackedDrawings, Entry.TextLabel)
-					Entry.TextLabel:Destroy()
-				end)
-			end
+			DestroyDrawing(Entry.Background, NotificationTrackedDrawings)
+			DestroyDrawing(Entry.Border, NotificationTrackedDrawings)
+			DestroyDrawing(Entry.AccentLine, NotificationTrackedDrawings)
+			DestroyDrawing(Entry.TextLabel, NotificationTrackedDrawings)
 			table.remove(Window._ActiveNotifications, EntryIndex)
 		end
 
@@ -3188,8 +3305,34 @@ function Library:CreateWindow(WindowConfig)
 		WindowHasFocus = true
 	end)))
 
-	local PreRenderConnection = PreRenderSignalConnect(RunService.PreRender, NewCClosure(function()
+	local HeartbeatConnection = HeartbeatSignalConnect(RunService.Heartbeat, NewCClosure(function(DeltaTime)
 		if Window._Destroyed then return end
+
+		local Dt = DeltaTime or 0.0167
+
+		Window._CloseButtonHoverFactor = UpdateAnimationFactor(Window._CloseButtonHoverFactor or 0, Window._CloseButtonHovered, Dt, 12)
+		Window._TitleTextHoverFactor = UpdateAnimationFactor(Window._TitleTextHoverFactor or 0, Window._TitleTextHovered, Dt, 12)
+
+		if Window._SearchActive then
+			local SearchBox = Window._SearchTextBox
+			SearchBox._HoverFactor = UpdateAnimationFactor(SearchBox._HoverFactor or 0, SearchBox._IsHovered, Dt, 12)
+			SearchBox._FocusFactor = UpdateAnimationFactor(SearchBox._FocusFactor or 0, SearchBox._IsFocused, Dt, 12)
+		end
+
+		for SectionIndex, Section in ipairs(Window._Sections) do
+			Section._HoverFactor = UpdateAnimationFactor(Section._HoverFactor or 0, Section._IsHovered, Dt, 12)
+			Section._ScrollbarHoverFactor = UpdateAnimationFactor(Section._ScrollbarHoverFactor or 0, Section._ScrollbarHovered or Section._DraggingScrollbar, Dt, 12)
+
+			for ElementIndex, Element in ipairs(Section._Elements) do
+				Element._HoverFactor = UpdateAnimationFactor(Element._HoverFactor or 0, Element._IsHovered, Dt, 12)
+				Element._FocusFactor = UpdateAnimationFactor(Element._FocusFactor or 0, Element._IsFocused, Dt, 12)
+				Element._ExpandFactor = UpdateAnimationFactor(Element._ExpandFactor or 0, Element._Expanded, Dt, 12)
+				Element._ActiveFactor = UpdateAnimationFactor(Element._ActiveFactor or 0, (Element._Type == "Slider" and Window._ActiveSlider == Element) or (Element._Type == "Toggle" and Element._Value) or false, Dt, 12)
+				if Element._Type == "Slider" then
+					Element._ThumbHoverFactor = UpdateAnimationFactor(Element._ThumbHoverFactor or 0, Element._IsThumbHovered or (Window._ActiveSlider == Element), Dt, 12)
+				end
+			end
+		end
 
 		if Window._SearchActive and Window._SearchTextBox._IsFocused then
 			local CurrentTime = tick()
@@ -3474,17 +3617,9 @@ function Library:CreateWindow(WindowConfig)
 					local ElementRegionPosition = Vector2.new(Window._Position.X + Element._PositionX, ElementYPosition)
 					local ElementRegionSize = Vector2.new(Element._Width, Element._Height)
 
-					local IsElementClipped = false
-					if Section._MaxHeight then
-						local ClippedHeight = Section._ClippedHeight or Section._ContentHeight or 0
-						if ClippedHeight > 0 then
-							local SectionAbsoluteTop = Window._Position.Y + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
-							local SectionAbsoluteBottom = Window._Position.Y + Section._PositionY - Window._ScrollOffset + ClippedHeight
-							IsElementClipped = (ElementYPosition + Element._Height <= SectionAbsoluteTop) or (ElementYPosition >= SectionAbsoluteBottom)
-						end
-					end
+					local IsElementVisible = IsElementVisibleInViewport(ElementYPosition, Element._Height, Section, Window, Window._Position.Y)
 
-					if not IsElementClipped and IsPointInsideRectangle(CurrentMousePosition, ElementRegionPosition, ElementRegionSize) then
+					if IsElementVisible and IsPointInsideRectangle(CurrentMousePosition, ElementRegionPosition, ElementRegionSize) then
 						if Element._Type == "TextButton" then
 							if Element._Callback then
 								pcall(Element._Callback)
@@ -3550,17 +3685,9 @@ function Library:CreateWindow(WindowConfig)
 				local ElementWidth = Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
 				local ElementRegionSize = Vector2.new(ElementWidth, Element._Height)
 
-				local IsElementClipped = false
-				if Section._MaxHeight then
-					local ClippedHeight = Section._ClippedHeight or Section._ContentHeight or 0
-					if ClippedHeight > 0 then
-						local SectionAbsoluteTop = Window._Position.Y + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
-						local SectionAbsoluteBottom = Window._Position.Y + Section._PositionY - Window._ScrollOffset + ClippedHeight
-						IsElementClipped = (ElementYPosition + Element._Height <= SectionAbsoluteTop) or (ElementYPosition >= SectionAbsoluteBottom)
-					end
-				end
+				local IsElementVisible = IsElementVisibleInViewport(ElementYPosition, Element._Height, Section, Window, Window._Position.Y)
 
-				local IsCurrentlyHovered = not IsElementClipped and IsPointInsideRectangle(CurrentMousePosition, ElementRegionPosition, ElementRegionSize)
+				local IsCurrentlyHovered = IsElementVisible and IsPointInsideRectangle(CurrentMousePosition, ElementRegionPosition, ElementRegionSize)
 
 				if Element._Type == "TextButton" then
 					Element._IsHovered = IsCurrentlyHovered
@@ -3707,7 +3834,7 @@ function Library:CreateWindow(WindowConfig)
 		end
 	end)))
 
-	table.insert(Window._Connections, PreRenderConnection)
+	table.insert(Window._Connections, HeartbeatConnection)
 	table.insert(Library._Windows, Window)
 
 	if UseImmediateMode and DrawingImmediateGetPaint then
@@ -3715,6 +3842,8 @@ function Library:CreateWindow(WindowConfig)
 			if Window._Destroyed or not Library._Visible or not Window._Visible then return end
 
 			local WindowPosition = Window._Position
+			local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
+			local ViewportEnd = ViewportStart + Window._VisibleHeight
 			local WindowWidth = Theme.WindowWidth
 
 			local ContentHeight = Window._VisibleHeight
@@ -3787,11 +3916,11 @@ function Library:CreateWindow(WindowConfig)
 
 			local TitleTextX   = WindowPosition.X + Theme.InnerMargin + 12
 			local TitleTextY   = WindowPosition.Y + (Theme.TitleBarHeight - Theme.TitleFontSize) / 2 + 2
-			local TitleTextColor   = Window._TitleTextHovered and Theme.TitleBarTextHover or Theme.TitleBarText
+			local TitleTextColor   = Theme.TitleBarText:Lerp(Theme.TitleBarTextHover, Window._TitleTextHoverFactor or 0)
 
 			local TitleDotCenter = Vector2.new(WindowPosition.X + Theme.InnerMargin + 4, WindowPosition.Y + Theme.TitleBarHeight / 2)
 			DrawingImmediateCircle(TitleDotCenter, 5, Theme.TitleBarSeparator, 0.4, 12, 1)
-			DrawingImmediateFilledCircle(TitleDotCenter, 2.5, Theme.TitleBarSeparator, 1, 12)
+			DrawingImmediateFilledCircle(TitleDotCenter, 2.5, Theme.TitleBarSeparator, 12, 1)
 			DrawingImmediateText(
 				Vector2.new(TitleTextX, TitleTextY),
 				Theme.Font, Theme.TitleFontSize, TitleTextColor, 1, Window._Title, false
@@ -3799,11 +3928,11 @@ function Library:CreateWindow(WindowConfig)
 
 			if Window._CloseButtonRegion then
 				local CloseRegion = Window._CloseButtonRegion
-				local CloseColor = Window._CloseButtonHovered and Theme.CloseButtonHover or Color3.fromRGB(160, 40, 52)
+				local CloseColor = Color3.fromRGB(160, 40, 52):Lerp(Theme.CloseButtonHover, Window._CloseButtonHoverFactor or 0)
 				DrawingImmediateFilledRectangle(CloseRegion.Position, CloseRegion.Size, CloseColor, 0.9, 0)
 
 				DrawingImmediateRectangle(CloseRegion.Position, CloseRegion.Size,
-					Window._CloseButtonHovered and Color3.fromRGB(255, 100, 115) or Color3.fromRGB(120, 40, 50),
+					Color3.fromRGB(120, 40, 50):Lerp(Color3.fromRGB(255, 100, 115), Window._CloseButtonHoverFactor or 0),
 					0.9, 0, 1)
 
 				DrawingImmediateText(
@@ -3821,9 +3950,6 @@ function Library:CreateWindow(WindowConfig)
 				DrawingImmediateLine(SearchIconCenter + Vector2.new(3, 3), SearchIconCenter + Vector2.new(7, 7), SearchIconColor, 1, 1.5)
 			end
 
-			local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
-			local ViewportEnd = ViewportStart + Window._VisibleHeight
-
 			for SectionIndex, Section in ipairs(Window._Sections) do
 				local SectionYPosition = WindowPosition.Y + Section._PositionY - Window._ScrollOffset
 
@@ -3838,11 +3964,11 @@ function Library:CreateWindow(WindowConfig)
 					local ClippedBgPos, ClippedBgSize = ClipRectangleToYRange(SectionHeaderPosition, SectionFullSize, ViewportStart, ViewportEnd)
 					if ClippedBgPos and ClippedBgSize then
 						DrawingImmediateFilledRectangle(ClippedBgPos, ClippedBgSize, Color3.fromRGB(13, 12, 18), 1, 0)
-						local SectionBorderColor = Section._IsHovered and Theme.WindowBorderHover or Theme.WindowBorder
+						local SectionBorderColor = Theme.WindowBorder:Lerp(Theme.WindowBorderHover, Section._HoverFactor or 0)
 						DrawingImmediateRectangle(ClippedBgPos, ClippedBgSize, SectionBorderColor, 0.6, 0, 1)
 					end
 
-					local LeftAccentColor = Section._IsHovered and Theme.SectionTextHover or Theme.TitleBarSeparator
+					local LeftAccentColor = Theme.TitleBarSeparator:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local LeftAccentFrom, LeftAccentTo = ClipVerticalLineToYRange(SectionHeaderPosition, Vector2.new(SectionHeaderPosition.X, SectionHeaderPosition.Y + SectionFullHeight), ViewportStart, ViewportEnd)
 					if LeftAccentFrom and LeftAccentTo then
 						DrawingImmediateLine(LeftAccentFrom, LeftAccentTo, LeftAccentColor, 0.8, 2)
@@ -3873,23 +3999,23 @@ function Library:CreateWindow(WindowConfig)
 						)
 					end
 
-					local SectionHeaderBg = Section._IsHovered and Theme.SectionBackgroundHover or Theme.SectionBackground
+					local SectionHeaderBg = Theme.SectionBackground:Lerp(Theme.SectionBackgroundHover, Section._HoverFactor or 0)
 					local ClippedHeaderPos, ClippedHeaderSize = ClipRectangleToYRange(SectionHeaderPosition, SectionHeaderSize, ViewportStart, ViewportEnd)
 					if ClippedHeaderPos and ClippedHeaderSize then
 						DrawingImmediateFilledRectangle(ClippedHeaderPos, ClippedHeaderSize, SectionHeaderBg, 1, 0)
 					end
 
-					local SectionAccentAlpha = Section._IsHovered and 1 or 0.7
+					local SectionAccentAlpha = LerpValue(0.7, 1, Section._HoverFactor or 0)
 					local SectionAccentStart, SectionAccentEnd = ClipHorizontalLineToYRange(
 						Vector2.new(SectionHeaderPosition.X, SectionHeaderPosition.Y + Theme.ElementHeight),
 						Vector2.new(SectionHeaderPosition.X + Section._Width, SectionHeaderPosition.Y + Theme.ElementHeight),
 						ViewportStart, ViewportEnd
 					)
 					if SectionAccentStart and SectionAccentEnd then
-						DrawingImmediateLine(SectionAccentStart, SectionAccentEnd, Theme.TitleBarSeparator, SectionAccentAlpha, Section._IsHovered and 2 or 1)
+						DrawingImmediateLine(SectionAccentStart, SectionAccentEnd, Theme.TitleBarSeparator, SectionAccentAlpha, LerpValue(1, 2, Section._HoverFactor or 0))
 					end
 
-					local SectionTitleColor = Section._IsHovered and Theme.SectionTextHover or Theme.SectionText
+					local SectionTitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionYPosition + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					if TitleY >= ViewportStart and TitleY + Theme.SectionFontSize <= ViewportEnd then
 						DrawingImmediateText(
@@ -3908,8 +4034,7 @@ function Library:CreateWindow(WindowConfig)
 						local ScrollProgress = Section._SectionScrollOffset / Section._SectionMaxScroll
 						local HandlePositionY = ScrollbarPositionY + (ScrollbarHeight - HandleHeight) * ScrollProgress
 
-						local IsScrollActive = Section._ScrollbarHovered or Section._DraggingScrollbar
-						local ScrollHandleColor = IsScrollActive and Theme.ScrollbarHandleHover or Theme.ScrollbarHandle
+						local ScrollHandleColor = Theme.ScrollbarHandle:Lerp(Theme.ScrollbarHandleHover, Section._ScrollbarHoverFactor or 0)
 
 						local TrackPos, TrackSize = ClipRectangleToYRange(
 							Vector2.new(ScrollbarPositionX, ScrollbarPositionY),
@@ -3934,39 +4059,24 @@ function Library:CreateWindow(WindowConfig)
 				for ElementIndex, Element in ipairs(Section._Elements) do
 					local ElementYPosition = WindowPosition.Y + Element._PositionY - Window._ScrollOffset
 
-					local IsElementVisible = ElementYPosition + Element._Height > ViewportStart and ElementYPosition < ViewportEnd
-					if Section._MaxHeight then
-						local SectionAbsoluteTop = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
-						local SectionAbsoluteBottom = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + (Section._ClippedHeight or Section._ContentHeight or 0)
-						IsElementVisible = IsElementVisible and (ElementYPosition + Element._Height > SectionAbsoluteTop) and (ElementYPosition < SectionAbsoluteBottom)
-					end
+					local IsElementVisible = IsElementVisibleInViewport(ElementYPosition, Element._Height, Section, Window, WindowPosition.Y)
 
 					if IsElementVisible then
 						local ElementPosition = Vector2.new(WindowPosition.X + Element._PositionX, ElementYPosition)
 						local ElementSize = Vector2.new(Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0), Element._Height)
 
-						local AllowedMinY = ViewportStart
-						local AllowedMaxY = ViewportEnd
-						if Section._MaxHeight then
-							local ClippedHeight = Section._ClippedHeight or Section._ContentHeight or 0
-							if ClippedHeight > 0 then
-								local SectionAbsoluteTop = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + Theme.ElementHeight + Theme.ElementPadding
-								local SectionAbsoluteBottom = WindowPosition.Y + Section._PositionY - Window._ScrollOffset + ClippedHeight
-								AllowedMinY = math.max(AllowedMinY, SectionAbsoluteTop)
-								AllowedMaxY = math.min(AllowedMaxY, SectionAbsoluteBottom)
-							end
-						end
+						local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
 
 						if Element._Type == "TextLabel" then
-							local LabelAccentAlpha = Element._IsHovered and 0.85 or 0.4
-							local LabelTextColor   = Element._IsHovered and Theme.LabelTextHover or Theme.LabelText
+							local LabelAccentAlpha = LerpValue(0.4, 0.85, Element._HoverFactor or 0)
+							local LabelTextColor   = Theme.LabelText:Lerp(Theme.LabelTextHover, Element._HoverFactor or 0)
 							local AccentFrom, AccentTo = ClipVerticalLineToYRange(
 								Vector2.new(ElementPosition.X, ElementYPosition + 4),
 								Vector2.new(ElementPosition.X, ElementYPosition + Element._Height - 4),
 								AllowedMinY, AllowedMaxY
 							)
 							if AccentFrom and AccentTo then
-								DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, LabelAccentAlpha, Element._IsHovered and 2 or 1)
+								DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, LabelAccentAlpha, LerpValue(1, 2, Element._HoverFactor or 0))
 							end
 
 							local VerticalPadding     = LabelVerticalPadding(Theme.ElementFontSize)
@@ -3986,21 +4096,21 @@ function Library:CreateWindow(WindowConfig)
 								end
 							end
 						elseif Element._Type == "TextButton" then
-							local ButtonColor = Element._IsHovered and Theme.ButtonBackgroundHover or Theme.ButtonBackground
+							local ButtonColor = Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
 							local ClippedPos, ClippedSize = ClipRectangleToYRange(ElementPosition, ElementSize, AllowedMinY, AllowedMaxY)
 							if ClippedPos and ClippedSize then
 								DrawingImmediateFilledRectangle(ClippedPos, ClippedSize, ButtonColor, 1, 0)
 								DrawingImmediateRectangle(ClippedPos, ClippedSize, Theme.ButtonBorder, 0.8, 0, 1)
 							end
 
-							if Element._IsHovered then
+							if (Element._HoverFactor or 0) > 0.01 then
 								local AccentFrom, AccentTo = ClipVerticalLineToYRange(
 									Vector2.new(ElementPosition.X, ElementYPosition + 3),
 									Vector2.new(ElementPosition.X, ElementYPosition + Element._Height - 3),
 									AllowedMinY, AllowedMaxY
 								)
 								if AccentFrom and AccentTo then
-									DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, 1, 2)
+									DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, Element._HoverFactor or 0, 2)
 								end
 							end
 
@@ -4012,21 +4122,21 @@ function Library:CreateWindow(WindowConfig)
 								)
 							end
 						elseif Element._Type == "Toggle" then
-							local ToggleBg = Element._IsHovered and Theme.ButtonBackgroundHover or Theme.ButtonBackground
+							local ToggleBg = Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
 							local ClippedPos, ClippedSize = ClipRectangleToYRange(ElementPosition, ElementSize, AllowedMinY, AllowedMaxY)
 							if ClippedPos and ClippedSize then
 								DrawingImmediateFilledRectangle(ClippedPos, ClippedSize, ToggleBg, 1, 0)
 								DrawingImmediateRectangle(ClippedPos, ClippedSize, Theme.ButtonBorder, 0.8, 0, 1)
 							end
 
-							if Element._Value then
+							if (Element._ActiveFactor or 0) > 0.01 then
 								local AccentFrom, AccentTo = ClipVerticalLineToYRange(
 									Vector2.new(ElementPosition.X, ElementYPosition + 3),
 									Vector2.new(ElementPosition.X, ElementYPosition + Element._Height - 3),
 									AllowedMinY, AllowedMaxY
 								)
 								if AccentFrom and AccentTo then
-									DrawingImmediateLine(AccentFrom, AccentTo, Color3.fromRGB(80, 220, 120), 1, 2)
+									DrawingImmediateLine(AccentFrom, AccentTo, Color3.fromRGB(80, 220, 120), Element._ActiveFactor or 0, 2)
 								end
 							end
 
@@ -4040,9 +4150,9 @@ function Library:CreateWindow(WindowConfig)
 
 							local PipX = WindowPosition.X + Element._PositionX + ElementSize.X - 14
 							local PipY = ElementYPosition + Element._Height / 2
-							local PipColor = Element._Value and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(80, 75, 100)
+							local PipColor = Color3.fromRGB(80, 75, 100):Lerp(Color3.fromRGB(80, 220, 120), Element._ActiveFactor or 0)
 							if PipY - 5 >= AllowedMinY and PipY + 5 <= AllowedMaxY then
-								DrawingImmediateFilledCircle(Vector2.new(PipX, PipY), 5, PipColor, 1, 20)
+								DrawingImmediateFilledCircle(Vector2.new(PipX, PipY), 5, PipColor, 20, 1)
 							end
 						elseif Element._Type == "TextBox" then
 							if Element._IsFocused then
@@ -4056,11 +4166,9 @@ function Library:CreateWindow(WindowConfig)
 								Element._CursorBlinkTime = 0
 							end
 
-							local TextBoxBackgroundColor = Element._IsFocused and Theme.TextBoxBackground
-								or (Element._IsHovered and Theme.TextBoxBackgroundHover or Theme.TextBoxBackground)
-							local TextBoxBorderColor = Element._IsFocused and Theme.TextBoxBorderFocused
-								or (Element._IsHovered and Theme.TextBoxBorder or Theme.TextBoxBorder)
-							local TextBoxBorderThickness = Element._IsFocused and 2 or 1
+							local TextBoxBackgroundColor = Theme.TextBoxBackground:Lerp(Theme.TextBoxBackgroundHover, Element._HoverFactor or 0)
+							local TextBoxBorderColor = Theme.TextBoxBorder:Lerp(Theme.TextBoxBorderFocused, Element._FocusFactor or 0)
+							local TextBoxBorderThickness = LerpValue(1, 2, Element._FocusFactor or 0)
 
 							local ClippedPos, ClippedSize = ClipRectangleToYRange(ElementPosition, ElementSize, AllowedMinY, AllowedMaxY)
 							if ClippedPos and ClippedSize then
@@ -4068,14 +4176,14 @@ function Library:CreateWindow(WindowConfig)
 								DrawingImmediateRectangle(ClippedPos, ClippedSize, TextBoxBorderColor, 1, 0, TextBoxBorderThickness)
 							end
 
-							if Element._IsFocused then
+							if (Element._FocusFactor or 0) > 0.01 then
 								local AccentFrom, AccentTo = ClipVerticalLineToYRange(
 									Vector2.new(ElementPosition.X, ElementYPosition + 3),
 									Vector2.new(ElementPosition.X, ElementYPosition + Element._Height - 3),
 									AllowedMinY, AllowedMaxY
 								)
 								if AccentFrom and AccentTo then
-									DrawingImmediateLine(AccentFrom, AccentTo, Theme.TextBoxBorderFocused, 1, 2)
+									DrawingImmediateLine(AccentFrom, AccentTo, Theme.TextBoxBorderFocused, Element._FocusFactor or 0, 2)
 								end
 							end
 
@@ -4127,23 +4235,24 @@ function Library:CreateWindow(WindowConfig)
 								)
 							end
 						elseif Element._Type == "Dropdown" then
-							local DropdownBackgroundColor = Element._IsHovered and Theme.DropdownHover or Theme.DropdownBackground
-							local DropdownBorderColor = (Element._Expanded and Theme.SectionText) or (Element._IsHovered and Theme.DropdownBorderHover) or Theme.DropdownBorder
-							local DropdownBorderThickness = (Element._Expanded or Element._IsHovered) and 2 or 1
+							local DropdownBackgroundColor = Theme.DropdownBackground:Lerp(Theme.DropdownHover, Element._HoverFactor or 0)
+							local DropdownBorderColor = Theme.DropdownBorder:Lerp(Theme.DropdownBorderHover, Element._HoverFactor or 0):Lerp(Theme.SectionText, Element._ExpandFactor or 0)
+							local DropdownBorderThickness = LerpValue(1, 2, math.max(Element._HoverFactor or 0, Element._ExpandFactor or 0))
 							local ClippedPos, ClippedSize = ClipRectangleToYRange(ElementPosition, ElementSize, AllowedMinY, AllowedMaxY)
 							if ClippedPos and ClippedSize then
 								DrawingImmediateFilledRectangle(ClippedPos, ClippedSize, DropdownBackgroundColor, 1, 0)
 								DrawingImmediateRectangle(ClippedPos, ClippedSize, DropdownBorderColor, 0.8, 0, DropdownBorderThickness)
 							end
 
-							if Element._IsHovered and not Element._Expanded then
+							local AccentAlpha = (Element._HoverFactor or 0) * (1 - (Element._ExpandFactor or 0))
+							if AccentAlpha > 0.01 then
 								local AccentFrom, AccentTo = ClipVerticalLineToYRange(
 									Vector2.new(ElementPosition.X, ElementYPosition + 3),
 									Vector2.new(ElementPosition.X, ElementYPosition + Element._Height - 3),
 									AllowedMinY, AllowedMaxY
 								)
 								if AccentFrom and AccentTo then
-									DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, 0.7, 2)
+									DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, AccentAlpha, 2)
 								end
 							end
 
@@ -4196,14 +4305,14 @@ function Library:CreateWindow(WindowConfig)
 							local Range = Maximum - Minimum
 							if Range == 0 then Range = 1 end
 
-							local SliderLabelColor = Element._IsHovered and Theme.TitleBarText or Theme.SliderText
+							local SliderLabelColor = Theme.SliderText:Lerp(Theme.TitleBarText, Element._HoverFactor or 0)
 							local TextY = ElementYPosition
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
 								DrawingImmediateText(
 									Vector2.new(WindowPosition.X + Element._PositionX, TextY),
 									Theme.Font, Theme.ElementFontSize, SliderLabelColor, 1, Element._Text, false
 								)
-								local ValueColor = (Window._ActiveSlider == Element) and Color3.fromRGB(220, 200, 255) or Theme.SectionText
+								local ValueColor = Theme.SectionText:Lerp(Color3.fromRGB(220, 200, 255), Element._ActiveFactor or 0)
 								DrawingImmediateText(
 									Vector2.new(WindowPosition.X + Element._PositionX + Element._TrackTotalWidth - 48, TextY),
 									Theme.Font, Theme.ElementFontSize, ValueColor, 1, tostring(Value), false
@@ -4211,11 +4320,11 @@ function Library:CreateWindow(WindowConfig)
 							end
 
 							local TrackPosition = Vector2.new(WindowPosition.X + (Element._TrackPositionX or Element._PositionX), ElementYPosition + Theme.ElementFontSize + 5)
-							local TrackHeight = (Element._IsHovered or Window._ActiveSlider == Element) and 10 or 8
+							local TrackHeight = LerpValue(8, 10, Element._HoverFactor or 0)
 							local TrackSize = Vector2.new(Element._TrackTotalWidth, TrackHeight)
 							local NormalizedValue = (Value - Minimum) / Range
 							local FillWidth = math.floor(Element._TrackTotalWidth * NormalizedValue)
-							local FillColor = (Window._ActiveSlider == Element) and Theme.SliderTrackFillHover or (Element._IsHovered and Theme.SliderTrackFillHover or Theme.SliderTrackFill)
+							local FillColor = Theme.SliderTrackFill:Lerp(Theme.SliderTrackFillHover, Element._HoverFactor or 0)
 
 							local ClippedTrackPos, ClippedTrackSize = ClipRectangleToYRange(TrackPosition, TrackSize, AllowedMinY, AllowedMaxY)
 							if ClippedTrackPos and ClippedTrackSize then
@@ -4230,20 +4339,20 @@ function Library:CreateWindow(WindowConfig)
 								end
 							end
 
-							local ThumbRadius = (Element._IsThumbHovered or Window._ActiveSlider == Element) and 9 or 7
-							local ThumbColor = (Element._IsThumbHovered or Window._ActiveSlider == Element) and Theme.SliderThumbHover or Theme.SliderThumb
+							local ThumbRadius = LerpValue(7, 9, Element._ThumbHoverFactor or 0)
+							local ThumbColor = Theme.SliderThumb:Lerp(Theme.SliderThumbHover, Element._ThumbHoverFactor or 0)
 							local ThumbY = TrackPosition.Y + TrackHeight / 2
 							if ThumbY - ThumbRadius >= AllowedMinY and ThumbY + ThumbRadius <= AllowedMaxY then
-								DrawingImmediateFilledCircle(Vector2.new(TrackPosition.X + FillWidth, ThumbY), ThumbRadius, ThumbColor, 1, 24)
-								DrawingImmediateFilledCircle(Vector2.new(TrackPosition.X + FillWidth, ThumbY), 3, FillColor, 1, 16)
+								DrawingImmediateFilledCircle(Vector2.new(TrackPosition.X + FillWidth, ThumbY), ThumbRadius, ThumbColor, 24, 1)
+								DrawingImmediateFilledCircle(Vector2.new(TrackPosition.X + FillWidth, ThumbY), 3, FillColor, 16, 1)
 							end
 						elseif Element._Type == "ColorPicker" then
-							local ColorPickerRowHovered = IsPointInsideRectangle(CurrentMousePosition, ElementPosition, ElementSize)
+							local HoverFactor = Element._HoverFactor or 0
 
-							if ColorPickerRowHovered then
+							if HoverFactor > 0.01 then
 								local ClippedPos, ClippedSize = ClipRectangleToYRange(ElementPosition, ElementSize, AllowedMinY, AllowedMaxY)
 								if ClippedPos and ClippedSize then
-									DrawingImmediateFilledRectangle(ClippedPos, ClippedSize, Theme.ButtonBackground, 0.55, 0)
+									DrawingImmediateFilledRectangle(ClippedPos, ClippedSize, Theme.ButtonBackground, HoverFactor * 0.55, 0)
 								end
 								local AccentFrom, AccentTo = ClipVerticalLineToYRange(
 									Vector2.new(ElementPosition.X, ElementYPosition + 3),
@@ -4251,13 +4360,13 @@ function Library:CreateWindow(WindowConfig)
 									AllowedMinY, AllowedMaxY
 								)
 								if AccentFrom and AccentTo then
-									DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, 1, 2)
+									DrawingImmediateLine(AccentFrom, AccentTo, Theme.SectionText, HoverFactor, 2)
 								end
 							end
 
 							local TextY = ElementYPosition + (Element._Height - Theme.ElementFontSize) / 2
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
-								local ColorPickerTextColor = ColorPickerRowHovered and Theme.LabelTextHover or Theme.LabelText
+								local ColorPickerTextColor = Theme.LabelText:Lerp(Theme.LabelTextHover, HoverFactor)
 								DrawingImmediateText(
 									Vector2.new(WindowPosition.X + Element._PositionX + 6, TextY),
 									Theme.Font, Theme.ElementFontSize, ColorPickerTextColor, 1, Element._Text, false
@@ -4271,17 +4380,17 @@ function Library:CreateWindow(WindowConfig)
 							local ClippedSwatchPos, ClippedSwatchSize = ClipRectangleToYRange(SwatchPosition, SwatchSizeVector, AllowedMinY, AllowedMaxY)
 							if ClippedSwatchPos and ClippedSwatchSize then
 								DrawingImmediateFilledRectangle(ClippedSwatchPos, ClippedSwatchSize, Element._Value or Color3.new(1, 1, 1), 1, 0)
-								local SwatchBorderColor = ColorPickerRowHovered and Theme.ColorPickerSwatchHover or Theme.ColorPickerBorder
-								local SwatchBorderThick = ColorPickerRowHovered and 2 or 1
+								local SwatchBorderColor = Theme.ColorPickerBorder:Lerp(Theme.ColorPickerSwatchHover, HoverFactor)
+								local SwatchBorderThick = LerpValue(1, 2, HoverFactor)
 								DrawingImmediateRectangle(ClippedSwatchPos, ClippedSwatchSize, SwatchBorderColor, 1, 0, SwatchBorderThick)
 							end
 
-							if ColorPickerRowHovered then
+							if HoverFactor > 0.01 then
 								local ChevronY = SwatchPosition.Y + (SwatchSizeValue - Theme.ElementFontSize) / 2
 								if ChevronY >= AllowedMinY and ChevronY + Theme.ElementFontSize - 1 <= AllowedMaxY then
 									DrawingImmediateText(
 										Vector2.new(SwatchPosition.X - 14, ChevronY),
-										Theme.Font, Theme.ElementFontSize - 1, Theme.DropdownArrow, 0.85, ">", false
+										Theme.Font, Theme.ElementFontSize - 1, Theme.DropdownArrow, HoverFactor * 0.85, ">", false
 									)
 								end
 							end

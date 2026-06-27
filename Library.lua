@@ -1,4 +1,3 @@
-
 local CloneFunction, CloneReference, NewCClosure, SetClipboard, GetClipboard
 local LastCopiedText = ""
 
@@ -749,32 +748,44 @@ table.insert(Library.Connections, InputChangedSignalConnect(UserInputService.Inp
 
 		for Index, Window in ipairs(Library._Windows) do
 			if Window._Visible and not Window._Destroyed then
-				local BodyPosition = Vector2.new(Window._Position.X, Window._Position.Y + Theme.TitleBarHeight)
-				local BodySize = Vector2.new(Theme.WindowWidth, Window._VisibleHeight)
+				local TabBarPosition = Window._Position + Vector2.new(0, Theme.TitleBarHeight)
+				local TabBarSize = Vector2.new(Theme.WindowWidth, Window._TabBarHeight)
+				if Window._TabBarHeight > 0 and IsPointInsideRectangle(CurrentMousePosition, TabBarPosition, TabBarSize) then
+					local TabCount = #Window._Pages
+					local TabWidth = math.max(80, Theme.WindowWidth / math.min(TabCount, 5))
+					local MaxTabScroll = math.max(0, (TabCount * TabWidth) - Theme.WindowWidth)
+					local Delta = Input.Position.Z * 30
+					Window._TabScrollOffset = math.clamp((Window._TabScrollOffset or 0) - Delta, 0, MaxTabScroll)
+					Window:RecalculateLayout()
+					break
+				else
+					local BodyPosition = Vector2.new(Window._Position.X, Window._Position.Y + Theme.TitleBarHeight)
+					local BodySize = Vector2.new(Theme.WindowWidth, Window._VisibleHeight)
 
-				if IsPointInsideRectangle(CurrentMousePosition, BodyPosition, BodySize) then
-					local Delta = Input.Position.Z * 45
-					local HandledBySection = false
+					if IsPointInsideRectangle(CurrentMousePosition, BodyPosition, BodySize) then
+						local Delta = Input.Position.Z * 45
+						local HandledBySection = false
 
-					for SectionIndex, ScrollableSection in ipairs(Window:GetActiveSections()) do
-						if ScrollableSection._MaxHeight and ScrollableSection._SectionMaxScroll > 0 then
-							local SectionAbsolutePosition = Window._Position + Vector2.new(ScrollableSection._PositionX, ScrollableSection._PositionY - Window._ScrollOffset)
-							local SectionVisibleSize = Vector2.new(ScrollableSection._Width, ScrollableSection._ClippedHeight or ScrollableSection._ContentHeight or 0)
-							if IsPointInsideRectangle(CurrentMousePosition, SectionAbsolutePosition, SectionVisibleSize) then
-								ScrollableSection._SectionScrollOffset = math.clamp(ScrollableSection._SectionScrollOffset - Delta, 0, ScrollableSection._SectionMaxScroll)
-								Window:RecalculateLayout()
-								HandledBySection = true
-								break
+						for SectionIndex, ScrollableSection in ipairs(Window:GetActiveSections()) do
+							if ScrollableSection._MaxHeight and ScrollableSection._SectionMaxScroll > 0 then
+								local SectionAbsolutePosition = Window._Position + Vector2.new(ScrollableSection._PositionX, ScrollableSection._PositionY - Window._ScrollOffset)
+								local SectionVisibleSize = Vector2.new(ScrollableSection._Width, ScrollableSection._ClippedHeight or ScrollableSection._ContentHeight or 0)
+								if IsPointInsideRectangle(CurrentMousePosition, SectionAbsolutePosition, SectionVisibleSize) then
+									ScrollableSection._SectionScrollOffset = math.clamp(ScrollableSection._SectionScrollOffset - Delta, 0, ScrollableSection._SectionMaxScroll)
+									Window:RecalculateLayout()
+									HandledBySection = true
+									break
+								end
 							end
 						end
-					end
 
-					if not HandledBySection then
-						Window._ScrollOffset = math.clamp(Window._ScrollOffset - Delta, 0, Window._MaxScroll)
-						Window:RecalculateLayout()
-					end
+						if not HandledBySection then
+							Window._ScrollOffset = math.clamp(Window._ScrollOffset - Delta, 0, Window._MaxScroll)
+							Window:RecalculateLayout()
+						end
 
-					break
+						break
+					end
 				end
 			end
 		end
@@ -1175,6 +1186,7 @@ function Library:CreateWindow(WindowConfig)
 	Window._ActivePageIndex = 1
 	Window._TabBarHeight = 28
 	Window._TabDrawings = {}
+	Window._TabScrollOffset = 0
 
 	function Window:GetActiveSections()
 		local ActivePage = Window._Pages[Window._ActivePageIndex]
@@ -2271,13 +2283,21 @@ function Library:CreateWindow(WindowConfig)
 				end
 
 				local TabCount = #Window._Pages
-				local TabWidth = Theme.WindowWidth / TabCount
+				local TabWidth = math.max(80, Theme.WindowWidth / math.min(TabCount, 5))
+				local MaxTabScroll = math.max(0, (TabCount * TabWidth) - Theme.WindowWidth)
+				Window._TabScrollOffset = math.clamp(Window._TabScrollOffset or 0, 0, MaxTabScroll)
+
 				for PageIndex, Page in ipairs(Window._Pages) do
 					local TabDrawings = Window._TabDrawings[PageIndex]
 					if TabDrawings then
-						local TabX = WindowPosition.X + (PageIndex - 1) * TabWidth
+						local TabX = WindowPosition.X + (PageIndex - 1) * TabWidth - Window._TabScrollOffset
 						local TabY = WindowPosition.Y + Theme.TitleBarHeight
 						
+						local TabVisible = Window._Visible
+						if TabX < WindowPosition.X - 10 or TabX + TabWidth > WindowPosition.X + Theme.WindowWidth + 10 then
+							TabVisible = false
+						end
+
 						local TextSize = GetTextBounds(Page.Title, Theme.ElementFontSize)
 						local TextX = TabX + (TabWidth - TextSize.X) / 2
 						local TextY = TabY + (Window._TabBarHeight - TextSize.Y) / 2
@@ -2293,10 +2313,10 @@ function Library:CreateWindow(WindowConfig)
 							Text = Page.Title,
 							Position = Vector2.new(TextX, TextY),
 							Color = TabColor,
-							Visible = Window._Visible,
+							Visible = TabVisible,
 						})
 
-						if IsActive or HoverFactor > 0.01 then
+						if TabVisible and (IsActive or HoverFactor > 0.01) then
 							local UnderlineY = TabY + Window._TabBarHeight - 2
 							local UnderlineWidth = TextSize.X + 10
 							local UnderlineX = TabX + (TabWidth - UnderlineWidth) / 2
@@ -2308,12 +2328,27 @@ function Library:CreateWindow(WindowConfig)
 								To = Vector2.new(UnderlineX + UnderlineWidth, UnderlineY),
 								Color = UnderlineColor,
 								Transparency = UnderlineAlpha,
-								Visible = Window._Visible,
+								Visible = TabVisible,
 							})
 						else
 							ApplyDrawingProperties(TabDrawings.UnderlineDrawing, { Visible = false })
 						end
-					end
+				end
+				if MaxTabScroll > 0 and Window._TabScrollbarDrawing then
+					local ScrollProgress = Window._TabScrollOffset / MaxTabScroll
+					local HandleWidth = math.clamp((Theme.WindowWidth / (TabCount * TabWidth)) * Theme.WindowWidth, 30, Theme.WindowWidth)
+					local HandleX = WindowPosition.X + (Theme.WindowWidth - HandleWidth) * ScrollProgress
+					local HandleY = WindowPosition.Y + Theme.TitleBarHeight + Window._TabBarHeight - 1.5
+
+					ApplyDrawingProperties(Window._TabScrollbarDrawing, {
+						From = Vector2.new(HandleX, HandleY),
+						To = Vector2.new(HandleX + HandleWidth, HandleY),
+						Color = Theme.TitleBarSeparator,
+						Transparency = 1,
+						Visible = Window._Visible,
+					})
+				elseif Window._TabScrollbarDrawing then
+					ApplyDrawingProperties(Window._TabScrollbarDrawing, { Visible = false })
 				end
 			end
 
@@ -2737,8 +2772,16 @@ function Library:CreateWindow(WindowConfig)
 					ZIndex = 4,
 					Visible = false,
 				})
+				Window._TabScrollbarDrawing = CreateTrackedDrawingObject("Line")
+				ApplyDrawingProperties(Window._TabScrollbarDrawing, {
+					Thickness = 3,
+					Color = Theme.TitleBarSeparator,
+					ZIndex = 6,
+					Visible = false,
+				})
 				table.insert(Window._DrawingObjects, Window._TabBarBackgroundDrawing)
 				table.insert(Window._DrawingObjects, Window._TabBarSeparatorDrawing)
+				table.insert(Window._DrawingObjects, Window._TabScrollbarDrawing)
 			end
 
 			local TabText = CreateTextDrawing(Page.Title, Theme.ElementFontSize, Theme.LabelText, 5)
@@ -3658,8 +3701,8 @@ function Library:CreateWindow(WindowConfig)
 			local IsTabHovered = false
 			if Window._TabBarHeight > 0 then
 				local TabCount = #Window._Pages
-				local TabWidth = Theme.WindowWidth / TabCount
-				local TabX = Window._Position.X + (PageIndex - 1) * TabWidth
+				local TabWidth = math.max(80, Theme.WindowWidth / math.min(TabCount, 5))
+				local TabX = Window._Position.X + (PageIndex - 1) * TabWidth - (Window._TabScrollOffset or 0)
 				local TabY = Window._Position.Y + Theme.TitleBarHeight
 				IsTabHovered = IsPointInsideRectangle(CurrentMousePosition, Vector2.new(TabX, TabY), Vector2.new(TabWidth, Window._TabBarHeight))
 			end
@@ -3874,8 +3917,8 @@ function Library:CreateWindow(WindowConfig)
 				local TabBarRegionSize = Vector2.new(Theme.WindowWidth, Window._TabBarHeight)
 				if IsPointInsideRectangle(CurrentMousePosition, TabBarRegionPosition, TabBarRegionSize) then
 					local TabCount = #Window._Pages
-					local TabWidth = Theme.WindowWidth / TabCount
-					local RelativeX = CurrentMousePosition.X - TabBarRegionPosition.X
+					local TabWidth = math.max(80, Theme.WindowWidth / math.min(TabCount, 5))
+					local RelativeX = CurrentMousePosition.X - TabBarRegionPosition.X + (Window._TabScrollOffset or 0)
 					local PageClickedIndex = math.floor(RelativeX / TabWidth) + 1
 					PageClickedIndex = math.clamp(PageClickedIndex, 1, TabCount)
 					
@@ -4321,42 +4364,59 @@ function Library:CreateWindow(WindowConfig)
 				)
 
 				local TabCount = #Window._Pages
-				local TabWidth = WindowWidth / TabCount
+				local TabWidth = math.max(80, WindowWidth / math.min(TabCount, 5))
+				local MaxTabScroll = math.max(0, (TabCount * TabWidth) - WindowWidth)
+				Window._TabScrollOffset = math.clamp(Window._TabScrollOffset or 0, 0, MaxTabScroll)
 				for PageIndex, Page in ipairs(Window._Pages) do
-					local TabX = WindowPosition.X + (PageIndex - 1) * TabWidth
+					local TabX = WindowPosition.X + (PageIndex - 1) * TabWidth - Window._TabScrollOffset
 					local TabY = WindowPosition.Y + Theme.TitleBarHeight
 					
-					local TextSize = GetTextBounds(Page.Title, Theme.ElementFontSize)
-					local TextX = TabX + (TabWidth - TextSize.X) / 2
-					local TextY = TabY + (Window._TabBarHeight - TextSize.Y) / 2
+					if TabX >= WindowPosition.X - 10 and TabX + TabWidth <= WindowPosition.X + WindowWidth + 10 then
+						local TextSize = GetTextBounds(Page.Title, Theme.ElementFontSize)
+						local TextX = TabX + (TabWidth - TextSize.X) / 2
+						local TextY = TabY + (Window._TabBarHeight - TextSize.Y) / 2
 
-					local IsActive = (PageIndex == Window._ActivePageIndex)
-					local HoverFactor = Page._HoverFactor or 0
-					
-					local BaseColor = IsActive and Theme.TitleBarText or Theme.LabelText
-					local TargetColor = IsActive and Theme.TitleBarTextHover or Theme.LabelTextHover
-					local TabColor = BaseColor:Lerp(TargetColor, HoverFactor)
+						local IsActive = (PageIndex == Window._ActivePageIndex)
+						local HoverFactor = Page._HoverFactor or 0
+						
+						local BaseColor = IsActive and Theme.TitleBarText or Theme.LabelText
+						local TargetColor = IsActive and Theme.TitleBarTextHover or Theme.LabelTextHover
+						local TabColor = BaseColor:Lerp(TargetColor, HoverFactor)
 
-					DrawingImmediateText(
-						Vector2.new(TextX, TextY),
-						Theme.Font, Theme.ElementFontSize, TabColor, 1, Page.Title, false
-					)
-
-					if IsActive or HoverFactor > 0.01 then
-						local UnderlineY = TabY + Window._TabBarHeight - 2
-						local UnderlineWidth = TextSize.X + 10
-						local UnderlineX = TabX + (TabWidth - UnderlineWidth) / 2
-						local UnderlineAlpha = IsActive and 1 or HoverFactor
-						local UnderlineColor = Theme.TitleBarSeparator:Lerp(Theme.TitleBarTextHover, HoverFactor)
-
-						DrawingImmediateLine(
-							Vector2.new(UnderlineX, UnderlineY),
-							Vector2.new(UnderlineX + UnderlineWidth, UnderlineY),
-							UnderlineColor,
-							UnderlineAlpha,
-							2
+						DrawingImmediateText(
+							Vector2.new(TextX, TextY),
+							Theme.Font, Theme.ElementFontSize, TabColor, 1, Page.Title, false
 						)
-					end
+
+						if IsActive or HoverFactor > 0.01 then
+							local UnderlineY = TabY + Window._TabBarHeight - 2
+							local UnderlineWidth = TextSize.X + 10
+							local UnderlineX = TabX + (TabWidth - UnderlineWidth) / 2
+							local UnderlineAlpha = IsActive and 1 or HoverFactor
+							local UnderlineColor = Theme.TitleBarSeparator:Lerp(Theme.TitleBarTextHover, HoverFactor)
+
+							DrawingImmediateLine(
+								Vector2.new(UnderlineX, UnderlineY),
+								Vector2.new(UnderlineX + UnderlineWidth, UnderlineY),
+								UnderlineColor,
+								UnderlineAlpha,
+								2
+							)
+						end
+				end
+				if MaxTabScroll > 0 then
+					local ScrollProgress = Window._TabScrollOffset / MaxTabScroll
+					local HandleWidth = math.clamp((WindowWidth / (TabCount * TabWidth)) * WindowWidth, 30, WindowWidth)
+					local HandleX = WindowPosition.X + (WindowWidth - HandleWidth) * ScrollProgress
+					local HandleY = WindowPosition.Y + Theme.TitleBarHeight + Window._TabBarHeight - 1.5
+
+					DrawingImmediateLine(
+						Vector2.new(HandleX, HandleY),
+						Vector2.new(HandleX + HandleWidth, HandleY),
+						Theme.TitleBarSeparator,
+						1.0,
+						3
+					)
 				end
 			end
 

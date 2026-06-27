@@ -5,52 +5,54 @@ local LastCopiedText = ""
 do
 
 	local RawCloneFunction = clonefunc or clonefunction or clone_function
-
-	local UseRawClone = RawCloneFunction
-	if UseRawClone and debug.info(UseRawClone, "s") ~= "[C]" then
-		UseRawClone = nil
+	local CloneIsNative = false
+	if RawCloneFunction then
+		local Success, Source = pcall(debug.info, RawCloneFunction, "s")
+		if Success and Source == "[C]" then
+			CloneIsNative = true
+		end
 	end
 
-	CloneFunction = UseRawClone and function(TargetFunction)
-		if typeof(TargetFunction) == "function" then
-			return UseRawClone(TargetFunction)
+	if RawCloneFunction and CloneIsNative then
+		CloneFunction = RawCloneFunction
+	else
+		CloneFunction = function(TargetFunction)
+			return TargetFunction
 		end
-		return TargetFunction
-	end or function(TargetFunction)
-		return TargetFunction
 	end
 
 	local RawCloneReference = cloneref or clone_ref or clonereference
-
-	CloneReference = RawCloneReference and function(TargetReference)
-		if typeof(TargetReference) == "Instance" then
-			local Success, ClonedReference = pcall(RawCloneReference, TargetReference)
-			if Success and typeof(ClonedReference) == "Instance" then
-				return ClonedReference
-			end
+	local CloneReferenceIsNative = false
+	if RawCloneReference then
+		local Success, Source = pcall(debug.info, RawCloneReference, "s")
+		if Success and Source == "[C]" then
+			CloneReferenceIsNative = true
 		end
-		return TargetReference
-	end or function(TargetReference)
-		return TargetReference
+	end
+
+	if RawCloneReference and CloneReferenceIsNative then
+		CloneReference = RawCloneReference
+	else
+		CloneReference = function(TargetReference)
+			return TargetReference
+		end
 	end
 
 	local RawNewCClosure = newcclosure
-
-	local UseRawNewCClosure = RawNewCClosure
-	if UseRawNewCClosure and debug.info(UseRawNewCClosure, "s") ~= "[C]" then
-		UseRawNewCClosure = nil
+	local NewCClosureIsNative = false
+	if RawNewCClosure then
+		local Success, Source = pcall(debug.info, RawNewCClosure, "s")
+		if Success and Source == "[C]" then
+			NewCClosureIsNative = true
+		end
 	end
 
-	NewCClosure = UseRawNewCClosure and function(TargetFunction)
-		if typeof(TargetFunction) == "function" then
-			local Success, WrappedFunction = pcall(UseRawNewCClosure, TargetFunction)
-			if Success and typeof(WrappedFunction) == "function" then
-				return WrappedFunction
-			end
+	if RawNewCClosure and NewCClosureIsNative then
+		NewCClosure = RawNewCClosure
+	else
+		NewCClosure = function(TargetFunction)
+			return TargetFunction
 		end
-		return TargetFunction
-	end or function(TargetFunction)
-		return TargetFunction
 	end
 
 
@@ -143,9 +145,10 @@ do
 		if RawSetRenderProperty then
 			pcall(RawSetRenderProperty, TargetObject, PropertyName, PropertyValue)
 		else
-			pcall(function()
+			local TargetType = type(TargetObject)
+			if TargetType == "table" or TargetType == "userdata" then
 				TargetObject[PropertyName] = PropertyValue
-			end)
+			end
 		end
 	end
 
@@ -159,11 +162,9 @@ do
 				return Value
 			end
 		else
-			local Success, Value = pcall(function()
+			local TargetType = type(TargetObject)
+			if TargetType == "table" or TargetType == "userdata" then
 				return TargetObject[PropertyName]
-			end)
-			if Success then
-				return Value
 			end
 		end
 		return nil
@@ -193,7 +194,7 @@ if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
 end
 
 if not DrawingIsNative then
-	local CustomDrawingLibraryLink = "https://raw.githubusercontent.com/contact-here/Contact/refs/heads/main/DrawingLibrary.lua"
+	local CustomDrawingLibraryLink = "https://raw.githubusercontent.com/placeholder-link-here/Drawing.lua"
 	local RawHttpGet = game.HttpGet
 	local RawRequestFunction = request or http_request or (syn and syn.request)
 	local FetchedContent
@@ -755,7 +756,7 @@ table.insert(Library.Connections, InputChangedSignalConnect(UserInputService.Inp
 					local Delta = Input.Position.Z * 45
 					local HandledBySection = false
 
-					for SectionIndex, ScrollableSection in ipairs(Window._Sections) do
+					for SectionIndex, ScrollableSection in ipairs(Window:GetActiveSections()) do
 						if ScrollableSection._MaxHeight and ScrollableSection._SectionMaxScroll > 0 then
 							local SectionAbsolutePosition = Window._Position + Vector2.new(ScrollableSection._PositionX, ScrollableSection._PositionY - Window._ScrollOffset)
 							local SectionVisibleSize = Vector2.new(ScrollableSection._Width, ScrollableSection._ClippedHeight or ScrollableSection._ContentHeight or 0)
@@ -804,7 +805,7 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 			if Window._SearchActive and Window._SearchTextBox._IsFocused then
 				FocusedBox = Window._SearchTextBox
 			else
-				for DiscardSectionIndex, Section in ipairs(Window._Sections) do
+				for DiscardSectionIndex, Section in ipairs(Window:GetActiveSections()) do
 					for DiscardElementIndex, Element in ipairs(Section._Elements) do
 						if Element._Type == "TextBox" and Element._IsFocused then
 							FocusedBox = Element
@@ -1096,6 +1097,7 @@ function Library:CreateWindow(WindowConfig)
 	WindowConfig.Position = WindowConfig.Position or Vector2.new(100, 100)
 
 	local WindowTrackedDrawings = {}
+	local GetTextBounds
 
 	local DestroyAllTrackedDrawings = function()
 		DestroyTrackedDrawingTable(WindowTrackedDrawings)
@@ -1112,6 +1114,24 @@ function Library:CreateWindow(WindowConfig)
 			ElementHeight   = 36,
 			TitleBarHeight  = 40,
 		}, { __index = Theme })
+	end
+
+	if not Theme.Base then
+		Theme.Base = {
+			TitleFontSize = Theme.TitleFontSize,
+			SectionFontSize = Theme.SectionFontSize,
+			ElementFontSize = Theme.ElementFontSize,
+			WindowWidth = Theme.WindowWidth,
+			TitleBarHeight = Theme.TitleBarHeight,
+			WindowVisibleHeight = Theme.WindowVisibleHeight,
+			ElementHeight = Theme.ElementHeight,
+			ElementPadding = Theme.ElementPadding,
+			SectionPadding = Theme.SectionPadding,
+			InnerMargin = Theme.InnerMargin,
+			ScrollbarWidth = Theme.ScrollbarWidth,
+			ColorSwatchSize = Theme.ColorSwatchSize,
+			ColorSwatchGap = Theme.ColorSwatchGap,
+		}
 	end
 
 	local Window = {}
@@ -1150,6 +1170,19 @@ function Library:CreateWindow(WindowConfig)
 
 	Window._ActiveDropdown = nil
 	Window._ActiveSlider = nil
+
+	Window._Pages = {}
+	Window._ActivePageIndex = 1
+	Window._TabBarHeight = 28
+	Window._TabDrawings = {}
+
+	function Window:GetActiveSections()
+		local ActivePage = Window._Pages[Window._ActivePageIndex]
+		if ActivePage then
+			return ActivePage.Sections
+		end
+		return Window._Sections
+	end
 
 	Window.OnSave = function() end
 	Window.OnExit = function() end
@@ -1439,7 +1472,7 @@ function Library:CreateWindow(WindowConfig)
 		if not DrawingBackendAvailable then return end
 
 		local WindowPosition = Window._Position
-		local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
+		local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight + Window._TabBarHeight
 		local ViewportEnd = ViewportStart + Window._VisibleHeight
 
 		local SearchBarHeightOffset = 0
@@ -1451,11 +1484,62 @@ function Library:CreateWindow(WindowConfig)
 		local ColumnOnePositionY = Theme.SectionPadding + SearchBarHeightOffset
 		local ColumnTwoPositionY = Theme.SectionPadding + SearchBarHeightOffset
 
-		for SectionIndex, Section in ipairs(Window._Sections) do
+		
+		if not UseImmediateMode and #Window._Pages > 0 then
+			for _, Sec in ipairs(Window._Sections) do
+				if Sec._PageIndex and Sec._PageIndex ~= Window._ActivePageIndex then
+					local VisibilityObjects = { Sec._FullBackground, Sec._Background, Sec._Border, Sec._TextLabel, Sec._AccentLine, Sec._LeftAccentLine, Sec._TopRightTechLine }
+					if Sec._CornerBrackets then
+						for _, LineObject in ipairs(Sec._CornerBrackets) do
+							table.insert(VisibilityObjects, LineObject)
+						end
+					end
+					SetDrawingObjectsVisibility(VisibilityObjects, false)
+					for _, Element in ipairs(Sec._Elements) do
+						if Element._Type == "TextLabel" then
+							SetDrawingObjectsVisibility({ Element._AccentLineDrawing }, false)
+							for _, LineObj in ipairs(Element._LineDrawings or {}) do
+								SetRenderProperty(LineObj, "Visible", false)
+							end
+						elseif Element._Type == "TextButton" then
+							SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing }, false)
+							if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+						elseif Element._Type == "Toggle" then
+							SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._IndicatorDrawing }, false)
+							if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+						elseif Element._Type == "TextBox" then
+							SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._LabelDrawing, Element._TextDrawing }, false)
+							if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+							if Element._SelectionDrawing then SetRenderProperty(Element._SelectionDrawing, "Visible", false) end
+							if Element._CursorDrawing then SetRenderProperty(Element._CursorDrawing, "Visible", false) end
+						elseif Element._Type == "Dropdown" then
+							SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._ArrowDrawing }, false)
+							if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+							for _, ItemData in ipairs(Element._ItemDrawingObjects) do
+								SetDrawingObjectsVisibility({ ItemData.BackgroundDrawing, ItemData.TextDrawing, ItemData.SeparatorDrawing }, false)
+							end
+						elseif Element._Type == "Slider" then
+							SetDrawingObjectsVisibility({
+								Element._LabelDrawing, Element._ValueTextDrawing,
+								Element._TrackBackgroundDrawing, Element._TrackBorderDrawing,
+								Element._TrackFillDrawing, Element._ThumbDrawing, Element._ThumbInnerDrawing,
+							}, false)
+						elseif Element._Type == "ColorPicker" then
+							SetDrawingObjectsVisibility({ Element._LabelDrawing, Element._SwatchDrawing, Element._SwatchBorderDrawing }, false)
+							if Element._HoverBackgroundDrawing then SetRenderProperty(Element._HoverBackgroundDrawing, "Visible", false) end
+							if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+							if Element._ChevronDrawing then SetRenderProperty(Element._ChevronDrawing, "Visible", false) end
+						end
+					end
+				end
+			end
+		end
+
+		for SectionIndex, Section in ipairs(Window:GetActiveSections()) do
 
 			local IsColumnOne = (ColumnOnePositionY <= ColumnTwoPositionY)
 			local CurrentX = (IsColumnOne and Theme.InnerMargin or (Theme.InnerMargin * 2 + ColumnWidth))
-			local CurrentY = Theme.TitleBarHeight + (IsColumnOne and ColumnOnePositionY or ColumnTwoPositionY)
+			local CurrentY = Theme.TitleBarHeight + Window._TabBarHeight + (IsColumnOne and ColumnOnePositionY or ColumnTwoPositionY)
 
 			Section._PositionX = CurrentX
 			Section._PositionY = CurrentY
@@ -1471,10 +1555,14 @@ function Library:CreateWindow(WindowConfig)
 				Element._Width = ColumnWidth - 10 - (HasScrollbar and (Theme.ScrollbarWidth + 4) or 0)
 
 				if Element._Type == "TextLabel" then
-					local AvailWidth   = TextAvailableWidth(Element._Width, Theme.ElementFontSize)
-					local WrappedLines = WrapText(Element._Text, AvailWidth, Theme.ElementFontSize)
-					Element._WrappedLines = WrappedLines
-					Element._Height = TextBlockHeight(#WrappedLines, Theme.ElementFontSize)
+					local AvailWidth = TextAvailableWidth(Element._Width, Theme.ElementFontSize)
+					if not Element._WrappedLines or Element._LastText ~= Element._Text or Element._LastWidth ~= Element._Width or Element._LastFontSize ~= Theme.ElementFontSize then
+						Element._LastText = Element._Text
+						Element._LastWidth = Element._Width
+						Element._LastFontSize = Theme.ElementFontSize
+						Element._WrappedLines = WrapText(Element._Text, AvailWidth, Theme.ElementFontSize)
+					end
+					Element._Height = TextBlockHeight(#Element._WrappedLines, Theme.ElementFontSize)
 				end
 				if Element._Type == "Slider" then
 					local ActualWidth = Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
@@ -1561,6 +1649,7 @@ function Library:CreateWindow(WindowConfig)
 									LineY
 								),
 								Color = TextColor,
+								Size = Theme.ElementFontSize,
 								Visible = IsLineVisible,
 							})
 						end
@@ -1570,11 +1659,14 @@ function Library:CreateWindow(WindowConfig)
 							ApplyDrawingProperties(Element._BackgroundDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = ButtonBackgroundColor, Visible = IsElementVisible })
 						end
 						if Element._BorderDrawing then
-							ApplyDrawingProperties(Element._BorderDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Visible = IsElementVisible })
+							ApplyDrawingProperties(Element._BorderDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = Theme.ButtonBorder, Visible = IsElementVisible })
 						end
 						if Element._TextDrawing then
 							ApplyDrawingProperties(Element._TextDrawing, {
+								Text = Element._Text,
 								Position = ElementAbsolutePosition + Vector2.new(10, (Element._Height - Theme.ElementFontSize) / 2),
+								Size = Theme.ElementFontSize,
+								Color = Theme.ButtonText,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1601,11 +1693,13 @@ function Library:CreateWindow(WindowConfig)
 							ApplyDrawingProperties(Element._BackgroundDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = ToggleBackgroundColor, Visible = IsElementVisible })
 						end
 						if Element._BorderDrawing then
-							ApplyDrawingProperties(Element._BorderDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Visible = IsElementVisible })
+							ApplyDrawingProperties(Element._BorderDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = Theme.ButtonBorder, Visible = IsElementVisible })
 						end
 						if Element._TextDrawing then
 							ApplyDrawingProperties(Element._TextDrawing, {
 								Position = ElementAbsolutePosition + Vector2.new(10, (Element._Height - Theme.ElementFontSize) / 2),
+								Size = Theme.ElementFontSize,
+								Color = Theme.ButtonText,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1676,6 +1770,8 @@ function Library:CreateWindow(WindowConfig)
 						if Element._LabelDrawing then
 							ApplyDrawingProperties(Element._LabelDrawing, {
 								Position = ElementAbsolutePosition + Vector2.new(8, (Element._Height - Theme.ElementFontSize) / 2),
+								Size = Theme.ElementFontSize,
+								Color = Theme.TextBoxText,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1701,6 +1797,7 @@ function Library:CreateWindow(WindowConfig)
 							ApplyDrawingProperties(Element._TextDrawing, {
 								Position = Vector2.new(InputStartX, ElementAbsolutePosition.Y + (Element._Height - Theme.ElementFontSize) / 2),
 								Text = ClippedText,
+								Size = Theme.ElementFontSize,
 								Color = HasValue and Theme.TextBoxText or Theme.TextBoxPlaceholder,
 								Visible = IsElementVisible,
 							})
@@ -1712,6 +1809,7 @@ function Library:CreateWindow(WindowConfig)
 								ApplyDrawingProperties(Element._CursorDrawing, {
 									From = Vector2.new(CursorX, CursorTopY + 1),
 									To = Vector2.new(CursorX, CursorBotY - 1),
+									Color = Theme.TextBoxCursor,
 									Visible = IsElementVisible and Element._IsFocused and Element._CursorVisible,
 								})
 							end
@@ -1746,12 +1844,16 @@ function Library:CreateWindow(WindowConfig)
 						if Element._TextDrawing then
 							ApplyDrawingProperties(Element._TextDrawing, {
 								Position = ElementAbsolutePosition + Vector2.new(8, (Element._Height - Theme.ElementFontSize) / 2),
+								Size = Theme.ElementFontSize,
+								Color = Theme.DropdownText,
 								Visible = IsElementVisible,
 							})
 						end
 						if Element._ArrowDrawing then
 							ApplyDrawingProperties(Element._ArrowDrawing, {
 								Position = ElementAbsolutePosition + Vector2.new(ElementAbsoluteSize.X - 18, (Element._Height - Theme.ElementFontSize) / 2),
+								Size = Theme.ElementFontSize,
+								Color = Theme.DropdownArrow,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1791,6 +1893,7 @@ function Library:CreateWindow(WindowConfig)
 								if ItemData.TextDrawing then
 									ApplyDrawingProperties(ItemData.TextDrawing, {
 										Position = ItemAbsolutePosition + Vector2.new(12, (Theme.ElementHeight - Theme.ElementFontSize) / 2),
+										Size = Theme.ElementFontSize,
 										Color = IsItemHovered and Theme.TitleBarText or Theme.DropdownText,
 										Visible = IsItemVisible,
 									})
@@ -1799,6 +1902,7 @@ function Library:CreateWindow(WindowConfig)
 									ApplyDrawingProperties(ItemData.SeparatorDrawing, {
 										From = Vector2.new(ItemAbsolutePosition.X + 6, ItemAbsolutePosition.Y + Theme.ElementHeight - 1),
 										To = Vector2.new(ItemAbsolutePosition.X + ElementAbsoluteSize.X - 6, ItemAbsolutePosition.Y + Theme.ElementHeight - 1),
+										Color = Theme.DropdownBorder,
 										Visible = IsItemVisible,
 									})
 								end
@@ -1808,12 +1912,13 @@ function Library:CreateWindow(WindowConfig)
 						local SliderLabelColor = Theme.SliderText:Lerp(Theme.TitleBarText, Element._HoverFactor or 0)
 						local ValueColor = Theme.SectionText:Lerp(Color3.fromRGB(220, 200, 255), Element._ActiveFactor or 0)
 						if Element._LabelDrawing then
-							ApplyDrawingProperties(Element._LabelDrawing, { Position = ElementAbsolutePosition, Color = SliderLabelColor, Visible = IsElementVisible })
+							ApplyDrawingProperties(Element._LabelDrawing, { Position = ElementAbsolutePosition, Color = SliderLabelColor, Size = Theme.ElementFontSize, Visible = IsElementVisible })
 						end
 						if Element._ValueTextDrawing then
 							ApplyDrawingProperties(Element._ValueTextDrawing, {
 								Position = ElementAbsolutePosition + Vector2.new(Element._TrackTotalWidth - 48, 0),
 								Color = ValueColor,
+								Size = Theme.ElementFontSize,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1823,10 +1928,10 @@ function Library:CreateWindow(WindowConfig)
 						local TrackAbsoluteSize = Vector2.new(Element._TrackTotalWidth, TrackHeight)
 
 						if Element._TrackBackgroundDrawing then
-							ApplyDrawingProperties(Element._TrackBackgroundDrawing, { Position = TrackAbsolutePosition, Size = TrackAbsoluteSize, Visible = IsElementVisible })
+							ApplyDrawingProperties(Element._TrackBackgroundDrawing, { Position = TrackAbsolutePosition, Size = TrackAbsoluteSize, Color = Theme.SliderTrackBackground, Visible = IsElementVisible })
 						end
 						if Element._TrackBorderDrawing then
-							ApplyDrawingProperties(Element._TrackBorderDrawing, { Position = TrackAbsolutePosition, Size = TrackAbsoluteSize, Visible = IsElementVisible })
+							ApplyDrawingProperties(Element._TrackBorderDrawing, { Position = TrackAbsolutePosition, Size = TrackAbsoluteSize, Color = Theme.SliderBorder, Visible = IsElementVisible })
 						end
 
 						local Range = Element._MaxValue - Element._MinValue
@@ -1893,6 +1998,7 @@ function Library:CreateWindow(WindowConfig)
 							ApplyDrawingProperties(Element._LabelDrawing, {
 								Position = ElementAbsolutePosition + Vector2.new(6, (Element._Height - Theme.ElementFontSize) / 2),
 								Color = ColorPickerTextColor,
+								Size = Theme.ElementFontSize,
 								Visible = IsElementVisible,
 							})
 						end
@@ -1909,6 +2015,8 @@ function Library:CreateWindow(WindowConfig)
 								ApplyDrawingProperties(Element._ChevronDrawing, {
 									Position = Vector2.new(SwatchAbsolutePosition.X - 14, SwatchAbsolutePosition.Y + (SwatchSize - Theme.ElementFontSize) / 2),
 									Transparency = (Element._HoverFactor or 0) * 0.85,
+									Color = Theme.DropdownArrow,
+									Size = Theme.ElementFontSize,
 									Visible = IsElementVisible and (Element._HoverFactor or 0) > 0.01,
 								})
 							end
@@ -1993,6 +2101,7 @@ function Library:CreateWindow(WindowConfig)
 							To = ClippedTo,
 							Thickness = LerpValue(1, 2, Section._HoverFactor or 0),
 							Transparency = AccentAlpha,
+							Color = Theme.TitleBarSeparator,
 							Visible = IsSectionVisible,
 						})
 					else
@@ -2039,6 +2148,7 @@ function Library:CreateWindow(WindowConfig)
 							ApplyDrawingProperties(Section._ScrollbarTrack, {
 								Position = TrackPos,
 								Size = TrackSize,
+								Color = Theme.ScrollbarBackground,
 								Visible = IsSectionVisible,
 							})
 						else
@@ -2140,8 +2250,72 @@ function Library:CreateWindow(WindowConfig)
 		local BodySize = Vector2.new(Theme.WindowWidth, Window._VisibleHeight)
 
 		if not UseImmediateMode then
-			ApplyDrawingProperties(WindowBodyBackgroundDrawing, { Position = BodyPosition, Size = BodySize })
-			ApplyDrawingProperties(WindowBodyBorderDrawing, { Position = BodyPosition, Size = BodySize })
+			ApplyDrawingProperties(WindowBodyBackgroundDrawing, { Position = BodyPosition, Size = BodySize, Color = Theme.WindowBackground })
+			ApplyDrawingProperties(WindowBodyBorderDrawing, { Position = BodyPosition, Size = BodySize, Color = Theme.WindowBorder })
+
+			if Window._TabBarHeight > 0 then
+				if Window._TabBarBackgroundDrawing then
+					ApplyDrawingProperties(Window._TabBarBackgroundDrawing, {
+						Position = WindowPosition + Vector2.new(0, Theme.TitleBarHeight),
+						Size = Vector2.new(Theme.WindowWidth, Window._TabBarHeight),
+						Color = Theme.TitleBarBackground,
+						Visible = Window._Visible,
+					})
+				end
+				if Window._TabBarSeparatorDrawing then
+					ApplyDrawingProperties(Window._TabBarSeparatorDrawing, {
+						From = WindowPosition + Vector2.new(0, Theme.TitleBarHeight + Window._TabBarHeight),
+						To = WindowPosition + Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight + Window._TabBarHeight),
+						Visible = Window._Visible,
+					})
+				end
+
+				local TabCount = #Window._Pages
+				local TabWidth = Theme.WindowWidth / TabCount
+				for PageIndex, Page in ipairs(Window._Pages) do
+					local TabDrawings = Window._TabDrawings[PageIndex]
+					if TabDrawings then
+						local TabX = WindowPosition.X + (PageIndex - 1) * TabWidth
+						local TabY = WindowPosition.Y + Theme.TitleBarHeight
+						
+						local TextSize = GetTextBounds(Page.Title, Theme.ElementFontSize)
+						local TextX = TabX + (TabWidth - TextSize.X) / 2
+						local TextY = TabY + (Window._TabBarHeight - TextSize.Y) / 2
+
+						local IsActive = (PageIndex == Window._ActivePageIndex)
+						local HoverFactor = Page._HoverFactor or 0
+						
+						local BaseColor = IsActive and Theme.TitleBarText or Theme.LabelText
+						local TargetColor = IsActive and Theme.TitleBarTextHover or Theme.LabelTextHover
+						local TabColor = BaseColor:Lerp(TargetColor, HoverFactor)
+
+						ApplyDrawingProperties(TabDrawings.TextDrawing, {
+							Text = Page.Title,
+							Position = Vector2.new(TextX, TextY),
+							Color = TabColor,
+							Visible = Window._Visible,
+						})
+
+						if IsActive or HoverFactor > 0.01 then
+							local UnderlineY = TabY + Window._TabBarHeight - 2
+							local UnderlineWidth = TextSize.X + 10
+							local UnderlineX = TabX + (TabWidth - UnderlineWidth) / 2
+							local UnderlineAlpha = IsActive and 1 or HoverFactor
+							local UnderlineColor = Theme.TitleBarSeparator:Lerp(Theme.TitleBarTextHover, HoverFactor)
+
+							ApplyDrawingProperties(TabDrawings.UnderlineDrawing, {
+								From = Vector2.new(UnderlineX, UnderlineY),
+								To = Vector2.new(UnderlineX + UnderlineWidth, UnderlineY),
+								Color = UnderlineColor,
+								Transparency = UnderlineAlpha,
+								Visible = Window._Visible,
+							})
+						else
+							ApplyDrawingProperties(TabDrawings.UnderlineDrawing, { Visible = false })
+						end
+					end
+				end
+			end
 
 			if WindowBottomBorderDrawing then
 				ApplyDrawingProperties(WindowBottomBorderDrawing, {
@@ -2161,10 +2335,11 @@ function Library:CreateWindow(WindowConfig)
 			end
 
 
-			ApplyDrawingProperties(TitleBarBackgroundDrawing, { Position = WindowPosition })
-			ApplyDrawingProperties(TitleBarBorderDrawing, { Position = WindowPosition })
+			ApplyDrawingProperties(TitleBarBackgroundDrawing, { Position = WindowPosition, Color = Theme.TitleBarBackground })
+			ApplyDrawingProperties(TitleBarBorderDrawing, { Position = WindowPosition, Color = Theme.WindowBorder })
 
 			if TitleBarTextDrawing then
+				SetRenderProperty(TitleBarTextDrawing, "Size", Theme.TitleFontSize)
 				SetRenderProperty(TitleBarTextDrawing, "Position", Vector2.new(
 					WindowPosition.X + Theme.InnerMargin + 12,
 					WindowPosition.Y + (Theme.TitleBarHeight - Theme.TitleFontSize) / 2 + 2
@@ -2177,6 +2352,7 @@ function Library:CreateWindow(WindowConfig)
 					WindowPosition.X + Theme.InnerMargin + 4,
 					WindowPosition.Y + Theme.TitleBarHeight / 2
 				))
+				SetRenderProperty(TitleAccentCircleDrawing, "Color", Theme.TitleBarSeparator)
 			end
 
 			if TitleAccentOuterGlowCircleDrawing then
@@ -2184,6 +2360,7 @@ function Library:CreateWindow(WindowConfig)
 					WindowPosition.X + Theme.InnerMargin + 4,
 					WindowPosition.Y + Theme.TitleBarHeight / 2
 				))
+				SetRenderProperty(TitleAccentOuterGlowCircleDrawing, "Color", Theme.TitleBarSeparator)
 			end
 
 			if TitleBarSeparatorDrawing then
@@ -2269,7 +2446,7 @@ function Library:CreateWindow(WindowConfig)
 			end
 
 			if Window._SearchActive then
-				local SearchBarPosition = WindowPosition + Vector2.new(Theme.InnerMargin, Theme.TitleBarHeight + 6)
+				local SearchBarPosition = WindowPosition + Vector2.new(Theme.InnerMargin, Theme.TitleBarHeight + Window._TabBarHeight + 6)
 				local SearchBarSize = Vector2.new(Theme.WindowWidth - Theme.InnerMargin * 2, 20)
 				Window._SearchTextBoxRegion = { Position = SearchBarPosition, Size = SearchBarSize }
 
@@ -2303,6 +2480,7 @@ function Library:CreateWindow(WindowConfig)
 					Text = SearchDisplayText,
 					Position = SearchBarPosition + Vector2.new(24, (20 - Theme.ElementFontSize) / 2),
 					Color = HasSearchValue and Theme.TextBoxText or Theme.TextBoxPlaceholder,
+					Size = Theme.ElementFontSize,
 					Visible = Window._Visible
 				})
 
@@ -2313,8 +2491,8 @@ function Library:CreateWindow(WindowConfig)
 					local DropdownSize = Vector2.new(SearchBarSize.X, DropdownHeight)
 					Window._SearchDropdownRegion = { Position = DropdownPosition, Size = DropdownSize }
 
-					ApplyDrawingProperties(Window._SearchDropdownBackgroundDrawing, { Position = DropdownPosition, Size = DropdownSize, Visible = Window._Visible })
-					ApplyDrawingProperties(Window._SearchDropdownBorderDrawing, { Position = DropdownPosition, Size = DropdownSize, Visible = Window._Visible })
+					ApplyDrawingProperties(Window._SearchDropdownBackgroundDrawing, { Position = DropdownPosition, Size = DropdownSize, Color = Theme.DropdownBackground, Visible = Window._Visible })
+					ApplyDrawingProperties(Window._SearchDropdownBorderDrawing, { Position = DropdownPosition, Size = DropdownSize, Color = Theme.DropdownBorder, Visible = Window._Visible })
 
 					if Window._HoveredSearchResultIndex then
 						local HoverPositionY = DropdownPosition.Y + (Window._HoveredSearchResultIndex - 1) * 24
@@ -2343,6 +2521,8 @@ function Library:CreateWindow(WindowConfig)
 							ApplyDrawingProperties(TextDrawingObject, {
 								Text = DisplayResultText,
 								Position = TextPosition,
+								Size = Theme.ElementFontSize,
+								Color = Theme.DropdownText,
 								Visible = Window._Visible
 							})
 						else
@@ -2412,13 +2592,87 @@ function Library:CreateWindow(WindowConfig)
 				Size = CloseRegion.Size,
 				Color = BorderColor,
 			})
+			
+			local ButtonScale = Theme.TitleFontSize / 14
+			local TextSize = math.floor(13 * ButtonScale)
+			local TextBounds = GetTextBounds("X", TextSize)
 			ApplyDrawingProperties(CloseButtonTextDrawing, {
-				Position = Vector2.new(CloseRegion.Position.X + 5, CloseRegion.Position.Y + 3),
+				Position = CloseRegion.Position + (CloseRegion.Size - TextBounds) / 2,
+				Size = TextSize,
 			})
 		end
 
 		if Window._ActiveColorPicker and Window._ActiveColorPicker._PopupPos then
 			Window._ActiveColorPicker:_BuildPopupDrawings()
+		end
+	end
+
+	local function UpdateElementsVisibility()
+		if UseImmediateMode then return end
+		local IsVisible = Window._Visible
+
+		for DiscardIndex, Section in ipairs(Window._Sections) do
+			local IsSectionVisible = IsVisible
+			if IsVisible and Section._PageIndex and Section._PageIndex ~= Window._ActivePageIndex then
+				IsSectionVisible = false
+			end
+
+			local VisibilityObjects = { Section._FullBackground, Section._Background, Section._Border, Section._TextLabel, Section._AccentLine, Section._LeftAccentLine, Section._TopRightTechLine }
+			if Section._CornerBrackets then
+				for DiscardLineIndex, LineObject in ipairs(Section._CornerBrackets) do
+					table.insert(VisibilityObjects, LineObject)
+				end
+			end
+			SetDrawingObjectsVisibility(VisibilityObjects, IsSectionVisible)
+
+			for ElementIndex, Element in ipairs(Section._Elements) do
+				if Element._Type == "TextLabel" then
+					SetDrawingObjectsVisibility({ Element._AccentLineDrawing }, IsSectionVisible)
+					for LineIndex, LineObj in ipairs(Element._LineDrawings or {}) do
+						SetRenderProperty(LineObj, "Visible", IsSectionVisible)
+					end
+
+				elseif Element._Type == "TextButton" then
+					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing }, IsSectionVisible)
+					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+
+				elseif Element._Type == "Toggle" then
+					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._IndicatorDrawing }, IsSectionVisible)
+					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", IsSectionVisible and Element._Value == true) end
+
+				elseif Element._Type == "TextBox" then
+					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._LabelDrawing, Element._TextDrawing }, IsSectionVisible)
+					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+					if Element._SelectionDrawing then SetRenderProperty(Element._SelectionDrawing, "Visible", false) end
+					if Element._CursorDrawing then SetRenderProperty(Element._CursorDrawing, "Visible", false) end
+
+				elseif Element._Type == "Dropdown" then
+					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._ArrowDrawing }, IsSectionVisible)
+					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+
+					local ItemsAreVisible = IsSectionVisible and Element._Expanded
+					for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects) do
+						SetDrawingObjectsVisibility({ ItemData.BackgroundDrawing, ItemData.TextDrawing, ItemData.SeparatorDrawing }, ItemsAreVisible)
+					end
+
+				elseif Element._Type == "Slider" then
+					SetDrawingObjectsVisibility({
+						Element._LabelDrawing, Element._ValueTextDrawing,
+						Element._TrackBackgroundDrawing, Element._TrackBorderDrawing,
+						Element._TrackFillDrawing, Element._ThumbDrawing, Element._ThumbInnerDrawing,
+					}, IsSectionVisible)
+
+				elseif Element._Type == "ColorPicker" then
+					SetDrawingObjectsVisibility({ Element._LabelDrawing, Element._SwatchDrawing, Element._SwatchBorderDrawing }, IsSectionVisible)
+					if Element._HoverBackgroundDrawing then SetRenderProperty(Element._HoverBackgroundDrawing, "Visible", false) end
+					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
+					if Element._ChevronDrawing then SetRenderProperty(Element._ChevronDrawing, "Visible", false) end
+
+					if not IsSectionVisible and Window._ActiveColorPicker == Element then
+						Element:ClosePopup()
+					end
+				end
+			end
 		end
 	end
 
@@ -2430,69 +2684,93 @@ function Library:CreateWindow(WindowConfig)
 
 		Window._Visible = IsVisible
 		SetDrawingObjectsVisibility(Window._DrawingObjects, IsVisible)
-
-		for DiscardIndex, Section in ipairs(Window._Sections) do
-			local VisibilityObjects = { Section._FullBackground, Section._Background, Section._Border, Section._TextLabel, Section._AccentLine, Section._LeftAccentLine, Section._TopRightTechLine }
-			if Section._CornerBrackets then
-				for DiscardLineIndex, LineObject in ipairs(Section._CornerBrackets) do
-					table.insert(VisibilityObjects, LineObject)
-				end
-			end
-			SetDrawingObjectsVisibility(VisibilityObjects, IsVisible)
-
-			for ElementIndex, Element in ipairs(Section._Elements) do
-				if Element._Type == "TextLabel" then
-					SetDrawingObjectsVisibility({ Element._AccentLineDrawing }, IsVisible)
-					for LineIndex, LineObj in ipairs(Element._LineDrawings or {}) do
-						SetRenderProperty(LineObj, "Visible", IsVisible)
-					end
-
-				elseif Element._Type == "TextButton" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing }, IsVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-
-				elseif Element._Type == "Toggle" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._IndicatorDrawing }, IsVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", IsVisible and Element._Value == true) end
-
-				elseif Element._Type == "TextBox" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._LabelDrawing, Element._TextDrawing }, IsVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-					if Element._SelectionDrawing then SetRenderProperty(Element._SelectionDrawing, "Visible", false) end
-					if Element._CursorDrawing then SetRenderProperty(Element._CursorDrawing, "Visible", false) end
-
-				elseif Element._Type == "Dropdown" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._ArrowDrawing }, IsVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-
-					local ItemsAreVisible = IsVisible and Element._Expanded
-					for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects) do
-						SetDrawingObjectsVisibility({ ItemData.BackgroundDrawing, ItemData.TextDrawing, ItemData.SeparatorDrawing }, ItemsAreVisible)
-					end
-
-				elseif Element._Type == "Slider" then
-					SetDrawingObjectsVisibility({
-						Element._LabelDrawing, Element._ValueTextDrawing,
-						Element._TrackBackgroundDrawing, Element._TrackBorderDrawing,
-						Element._TrackFillDrawing, Element._ThumbDrawing, Element._ThumbInnerDrawing,
-					}, IsVisible)
-
-				elseif Element._Type == "ColorPicker" then
-					SetDrawingObjectsVisibility({ Element._LabelDrawing, Element._SwatchDrawing, Element._SwatchBorderDrawing }, IsVisible)
-					if Element._HoverBackgroundDrawing then SetRenderProperty(Element._HoverBackgroundDrawing, "Visible", false) end
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-					if Element._ChevronDrawing then SetRenderProperty(Element._ChevronDrawing, "Visible", false) end
-
-					if not IsVisible and Window._ActiveColorPicker == Element then
-						Element:ClosePopup()
-					end
-				end
-			end
-		end
+		UpdateElementsVisibility()
 	end
 
 	function Window:SetVisible(IsVisible)
 		SetEntireWindowVisibility(IsVisible)
+	end
+
+	function GetTextBounds(Text, FontSize)
+		local Ratio = Theme.FontCharWidthRatio or 0.52
+		local CharWidth = FontSize * (Ratio * 1.15)
+		return Vector2.new(#Text * CharWidth, FontLineHeight(FontSize))
+	end
+
+	function Window:CreatePage(PageConfig)
+		PageConfig = PageConfig or {}
+		PageConfig.Title = PageConfig.Title or "Page"
+
+		local PageIndex = #Window._Pages + 1
+		local Page = {
+			Title = PageConfig.Title,
+			Sections = {},
+			_Index = PageIndex,
+			_HoverFactor = 0,
+		}
+
+		Window._TabBarHeight = 28
+
+		if #Window._Pages == 0 then
+			Window._ActivePageIndex = 1
+		end
+
+		table.insert(Window._Pages, Page)
+
+		if #Window._Pages == 1 then
+			for _, Sec in ipairs(Window._Sections) do
+				if not Sec._PageIndex then
+					Sec._PageIndex = 1
+					table.insert(Page.Sections, Sec)
+				end
+			end
+		end
+
+		if not UseImmediateMode and DrawingBackendAvailable then
+			if not Window._TabBarBackgroundDrawing then
+				Window._TabBarBackgroundDrawing = CreateRectangleDrawing(Theme.TitleBarBackground, true, 4, 0.97)
+				Window._TabBarSeparatorDrawing = CreateTrackedDrawingObject("Line")
+				ApplyDrawingProperties(Window._TabBarSeparatorDrawing, {
+					Thickness = 2,
+					Transparency = 0.85,
+					Color = Theme.TitleBarSeparator,
+					ZIndex = 4,
+					Visible = false,
+				})
+				table.insert(Window._DrawingObjects, Window._TabBarBackgroundDrawing)
+				table.insert(Window._DrawingObjects, Window._TabBarSeparatorDrawing)
+			end
+
+			local TabText = CreateTextDrawing(Page.Title, Theme.ElementFontSize, Theme.LabelText, 5)
+			ApplyDrawingProperties(TabText, { Visible = Window._Visible })
+
+			local TabUnderline = CreateTrackedDrawingObject("Line")
+			ApplyDrawingProperties(TabUnderline, {
+				Thickness = 2,
+				Color = Theme.TitleBarSeparator,
+				ZIndex = 5,
+				Visible = false,
+			})
+
+			Window._TabDrawings[PageIndex] = {
+				TextDrawing = TabText,
+				UnderlineDrawing = TabUnderline,
+			}
+
+			table.insert(Window._DrawingObjects, TabText)
+			table.insert(Window._DrawingObjects, TabUnderline)
+		end
+
+		function Page:CreateSection(SectionConfig)
+			SectionConfig = SectionConfig or {}
+			SectionConfig._PageIndex = PageIndex
+			return Window:CreateSection(SectionConfig)
+		end
+
+		Window:RecalculateLayout()
+		UpdateElementsVisibility()
+
+		return Page
 	end
 
 	function Window:CreateSection(SectionConfig)
@@ -2510,6 +2788,16 @@ function Library:CreateWindow(WindowConfig)
 		Section._SectionMaxScroll = 0
 		Section._DraggingScrollbar = false
 		Section._ScrollbarHovered = false
+
+		local PageIndex = SectionConfig._PageIndex
+		if not PageIndex and #Window._Pages > 0 then
+			PageIndex = 1
+		end
+
+		if PageIndex then
+			Section._PageIndex = PageIndex
+			table.insert(Window._Pages[PageIndex].Sections, Section)
+		end
 
 		if not UseImmediateMode and DrawingBackendAvailable then
 			Section._FullBackground = CreateRectangleDrawing(Color3.fromRGB(13, 12, 18), true, 4, 1)
@@ -2720,6 +3008,14 @@ function Library:CreateWindow(WindowConfig)
 					ZIndex = 13,
 					Visible = false,
 				})
+			end
+
+			function Element:SetText(NewText)
+				Element._Text = NewText
+				if Element._TextDrawing then
+					SetRenderProperty(Element._TextDrawing, "Text", NewText)
+				end
+				Window:RecalculateLayout()
 			end
 
 			table.insert(Section._Elements, Element)
@@ -3086,20 +3382,22 @@ function Library:CreateWindow(WindowConfig)
 			function Element:_BuildPopupDrawings()
 				Element:_DestroyPopupDrawings()
 
-				local SwatchSize    = 22
-				local SwatchGap     = 4
-				local Margin        = 10
+				local Camera = Workspace.CurrentCamera
+				local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
+				local Scale = math.clamp(math.min(ViewportSize.X / 1920, ViewportSize.Y / 1080), 1.0, 2.0)
+
+				local SwatchSize    = 22 * Scale
+				local SwatchGap     = 4 * Scale
+				local Margin        = 10 * Scale
 				local Columns       = 10
 				local RowCount          = math.ceil(#ColorPalette / Columns)
 				local GridWidth     = Columns * SwatchSize + (Columns - 1) * SwatchGap
 				local PopupWidth    = Margin + GridWidth + Margin
-				local HeaderHeight  = 24
+				local HeaderHeight  = 24 * Scale
 				local GridHeight    = RowCount * SwatchSize + (RowCount - 1) * SwatchGap
-				local ButtonHeight       = 24
-				local PopupHeight   = HeaderHeight + Margin + GridHeight + 10 + ButtonHeight + 10
+				local ButtonHeight       = 24 * Scale
+				local PopupHeight   = HeaderHeight + Margin + GridHeight + 10 * Scale + ButtonHeight + 10 * Scale
 
-				local Camera = workspace.CurrentCamera
-				local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
 				local WindowPos = Window._Position
 				local PopupX = WindowPos.X + Theme.WindowWidth + 10
 				if PopupX + PopupWidth > ViewportSize.X - 8 then PopupX = WindowPos.X - PopupWidth - 10 end
@@ -3126,8 +3424,10 @@ function Library:CreateWindow(WindowConfig)
 
 				Element._PopupHeaderDrawing = CreateRectangleDrawing(Theme.TitleBarBackground, true, 51, 1)
 				ApplyDrawingProperties(Element._PopupHeaderDrawing, { Position = PopupPosition, Size = Vector2.new(PopupWidth, HeaderHeight), Visible = true })
-				Element._PopupTitleDrawing = CreateTextDrawing("Select Color", 12, Theme.TitleBarText, 52)
-				ApplyDrawingProperties(Element._PopupTitleDrawing, { Position = Vector2.new(PopupPosition.X + Margin, PopupPosition.Y + (HeaderHeight - 12) / 2), Visible = true })
+				Element._PopupTitleDrawing = CreateTextDrawing("Select color", 12 * Scale, Theme.TitleBarText, 52)
+				
+				local TitleBounds = GetTextBounds("Select color", 12 * Scale)
+				ApplyDrawingProperties(Element._PopupTitleDrawing, { Position = Vector2.new(PopupPosition.X + Margin, PopupPosition.Y + (HeaderHeight - TitleBounds.Y) / 2), Visible = true })
 
 				Element._PopupSwatchDrawings = {}
 				local GridStartY = PopupPosition.Y + HeaderHeight + Margin
@@ -3148,7 +3448,7 @@ function Library:CreateWindow(WindowConfig)
 					table.insert(Element._PopupSwatchDrawings, { Fill = FillDrawing, Border = BorderDrawing })
 				end
 
-				local ButtonY   = GridStartY + GridHeight + 10
+				local ButtonY   = GridStartY + GridHeight + 10 * Scale
 				local ButtonWidth   = (PopupWidth - Margin * 3) / 2
 				local SavePos   = Vector2.new(PopupPosition.X + Margin, ButtonY)
 				local ExitPos   = Vector2.new(PopupPosition.X + Margin * 2 + ButtonWidth, ButtonY)
@@ -3159,13 +3459,15 @@ function Library:CreateWindow(WindowConfig)
 
 				Element._PopupSaveBackground  = CreateRectangleDrawing(Theme.SaveButtonBackground, true, 52, 1)
 				ApplyDrawingProperties(Element._PopupSaveBackground, { Position = SavePos, Size = ButtonSize, Visible = true })
-				Element._PopupSaveText = CreateTextDrawing("Save", 12, Theme.ButtonText, 53)
-				ApplyDrawingProperties(Element._PopupSaveText, { Position = Vector2.new(SavePos.X + (ButtonWidth - 30) / 2, SavePos.Y + (ButtonHeight - 12) / 2), Visible = true })
+				Element._PopupSaveText = CreateTextDrawing("Save", 12 * Scale, Theme.ButtonText, 53)
+				local SaveBounds = GetTextBounds("Save", 12 * Scale)
+				ApplyDrawingProperties(Element._PopupSaveText, { Position = Vector2.new(SavePos.X + (ButtonWidth - SaveBounds.X) / 2, SavePos.Y + (ButtonHeight - SaveBounds.Y) / 2), Visible = true })
 
 				Element._PopupExitBackground  = CreateRectangleDrawing(Theme.ExitButtonBackground, true, 52, 1)
 				ApplyDrawingProperties(Element._PopupExitBackground, { Position = ExitPos, Size = ButtonSize, Visible = true })
-				Element._PopupExitText = CreateTextDrawing("Exit", 12, Theme.ButtonText, 53)
-				ApplyDrawingProperties(Element._PopupExitText, { Position = Vector2.new(ExitPos.X + (ButtonWidth - 30) / 2, ExitPos.Y + (ButtonHeight - 12) / 2), Visible = true })
+				Element._PopupExitText = CreateTextDrawing("Exit", 12 * Scale, Theme.ButtonText, 53)
+				local ExitBounds = GetTextBounds("Exit", 12 * Scale)
+				ApplyDrawingProperties(Element._PopupExitText, { Position = Vector2.new(ExitPos.X + (ButtonWidth - ExitBounds.X) / 2, ExitPos.Y + (ButtonHeight - ExitBounds.Y) / 2), Visible = true })
 			end
 
 			function Element:_DestroyPopupDrawings()
@@ -3243,7 +3545,36 @@ function Library:CreateWindow(WindowConfig)
 					end
 				end
 
-				Element:SelectSwatch(ClosestMatchIndex)
+				if Element._SelectedSwatchIndex and Element._SwatchDrawingObjects[Element._SelectedSwatchIndex] then
+					local PreviousSwatch = Element._SwatchDrawingObjects[Element._SelectedSwatchIndex]
+					if PreviousSwatch.BorderDrawing then
+						ApplyDrawingProperties(PreviousSwatch.BorderDrawing, {
+							Color = Theme.ColorPickerBorder,
+							Thickness = 1,
+						})
+					end
+				end
+
+				Element._SelectedSwatchIndex = ClosestMatchIndex
+				Element._Value = NewColor
+
+				if Element._SwatchDrawingObjects[ClosestMatchIndex] then
+					local NewlySelectedSwatch = Element._SwatchDrawingObjects[ClosestMatchIndex]
+					if NewlySelectedSwatch.BorderDrawing then
+						ApplyDrawingProperties(NewlySelectedSwatch.BorderDrawing, {
+							Color = Theme.ColorPickerSelectedBorder,
+							Thickness = 2,
+						})
+					end
+				end
+
+				if Element._SwatchDrawing then
+					SetRenderProperty(Element._SwatchDrawing, "Color", Element._Value)
+				end
+
+				if Element._Callback then
+					pcall(Element._Callback, Element._Value)
+				end
 			end
 
 			function Element:GetValue()
@@ -3309,27 +3640,49 @@ function Library:CreateWindow(WindowConfig)
 		if Window._Destroyed then return end
 
 		local Dt = DeltaTime or 0.0167
+		local CurrentMousePosition = GetMouseLocation(UserInputService)
 
-		Window._CloseButtonHoverFactor = UpdateAnimationFactor(Window._CloseButtonHoverFactor or 0, Window._CloseButtonHovered, Dt, 12)
-		Window._TitleTextHoverFactor = UpdateAnimationFactor(Window._TitleTextHoverFactor or 0, Window._TitleTextHovered, Dt, 12)
+		local AnimationChanged = false
+		local function UpdateAnim(CurrentFactor, TargetState, Dt, Speed)
+			local NewFactor = UpdateAnimationFactor(CurrentFactor, TargetState, Dt, Speed)
+			if NewFactor ~= CurrentFactor then
+				AnimationChanged = true
+			end
+			return NewFactor
+		end
+
+		Window._CloseButtonHoverFactor = UpdateAnim(Window._CloseButtonHoverFactor or 0, Window._CloseButtonHovered, Dt, 12)
+		Window._TitleTextHoverFactor = UpdateAnim(Window._TitleTextHoverFactor or 0, Window._TitleTextHovered, Dt, 12)
+
+		for PageIndex, Page in ipairs(Window._Pages) do
+			local IsTabHovered = false
+			if Window._TabBarHeight > 0 then
+				local TabCount = #Window._Pages
+				local TabWidth = Theme.WindowWidth / TabCount
+				local TabX = Window._Position.X + (PageIndex - 1) * TabWidth
+				local TabY = Window._Position.Y + Theme.TitleBarHeight
+				IsTabHovered = IsPointInsideRectangle(CurrentMousePosition, Vector2.new(TabX, TabY), Vector2.new(TabWidth, Window._TabBarHeight))
+			end
+			Page._HoverFactor = UpdateAnim(Page._HoverFactor or 0, IsTabHovered, Dt, 12)
+		end
 
 		if Window._SearchActive then
 			local SearchBox = Window._SearchTextBox
-			SearchBox._HoverFactor = UpdateAnimationFactor(SearchBox._HoverFactor or 0, SearchBox._IsHovered, Dt, 12)
-			SearchBox._FocusFactor = UpdateAnimationFactor(SearchBox._FocusFactor or 0, SearchBox._IsFocused, Dt, 12)
+			SearchBox._HoverFactor = UpdateAnim(SearchBox._HoverFactor or 0, SearchBox._IsHovered, Dt, 12)
+			SearchBox._FocusFactor = UpdateAnim(SearchBox._FocusFactor or 0, SearchBox._IsFocused, Dt, 12)
 		end
 
 		for SectionIndex, Section in ipairs(Window._Sections) do
-			Section._HoverFactor = UpdateAnimationFactor(Section._HoverFactor or 0, Section._IsHovered, Dt, 12)
-			Section._ScrollbarHoverFactor = UpdateAnimationFactor(Section._ScrollbarHoverFactor or 0, Section._ScrollbarHovered or Section._DraggingScrollbar, Dt, 12)
+			Section._HoverFactor = UpdateAnim(Section._HoverFactor or 0, Section._IsHovered, Dt, 12)
+			Section._ScrollbarHoverFactor = UpdateAnim(Section._ScrollbarHoverFactor or 0, Section._ScrollbarHovered or Section._DraggingScrollbar, Dt, 12)
 
 			for ElementIndex, Element in ipairs(Section._Elements) do
-				Element._HoverFactor = UpdateAnimationFactor(Element._HoverFactor or 0, Element._IsHovered, Dt, 12)
-				Element._FocusFactor = UpdateAnimationFactor(Element._FocusFactor or 0, Element._IsFocused, Dt, 12)
-				Element._ExpandFactor = UpdateAnimationFactor(Element._ExpandFactor or 0, Element._Expanded, Dt, 12)
-				Element._ActiveFactor = UpdateAnimationFactor(Element._ActiveFactor or 0, (Element._Type == "Slider" and Window._ActiveSlider == Element) or (Element._Type == "Toggle" and Element._Value) or false, Dt, 12)
+				Element._HoverFactor = UpdateAnim(Element._HoverFactor or 0, Element._IsHovered, Dt, 12)
+				Element._FocusFactor = UpdateAnim(Element._FocusFactor or 0, Element._IsFocused, Dt, 12)
+				Element._ExpandFactor = UpdateAnim(Element._ExpandFactor or 0, Element._Expanded, Dt, 12)
+				Element._ActiveFactor = UpdateAnim(Element._ActiveFactor or 0, (Element._Type == "Slider" and Window._ActiveSlider == Element) or (Element._Type == "Toggle" and Element._Value) or false, Dt, 12)
 				if Element._Type == "Slider" then
-					Element._ThumbHoverFactor = UpdateAnimationFactor(Element._ThumbHoverFactor or 0, Element._IsThumbHovered or (Window._ActiveSlider == Element), Dt, 12)
+					Element._ThumbHoverFactor = UpdateAnim(Element._ThumbHoverFactor or 0, Element._IsThumbHovered or (Window._ActiveSlider == Element), Dt, 12)
 				end
 			end
 		end
@@ -3348,7 +3701,6 @@ function Library:CreateWindow(WindowConfig)
 
 		if not WindowHasFocus then return end
 
-		local CurrentMousePosition = GetMouseLocation(UserInputService)
 		local IsMouseButtonDown = IsMouseButtonPressed(UserInputService, Enum.UserInputType.MouseButton1)
 
 		local MouseButtonJustPressed = IsMouseButtonDown and not PreviousMouseButtonState
@@ -3400,7 +3752,7 @@ function Library:CreateWindow(WindowConfig)
 			Window:RecalculateLayout()
 		end
 
-		for SectionIndex, ScrollableSection in ipairs(Window._Sections) do
+		for SectionIndex, ScrollableSection in ipairs(Window:GetActiveSections()) do
 			if ScrollableSection._DraggingScrollbar and IsMouseButtonDown and ScrollableSection._MaxHeight and ScrollableSection._SectionMaxScroll > 0 then
 				local SectionAbsolutePosition = Window._Position + Vector2.new(ScrollableSection._PositionX, ScrollableSection._PositionY - Window._ScrollOffset)
 				local ScrollbarPositionY = SectionAbsolutePosition.Y + Theme.ElementHeight + 2
@@ -3444,6 +3796,12 @@ function Library:CreateWindow(WindowConfig)
 					if MatchedItem then
 						local TargetSection = MatchedItem.Section
 						local TargetElement = MatchedItem.Element
+
+						if TargetSection._PageIndex and TargetSection._PageIndex ~= Window._ActivePageIndex then
+							Window._ActivePageIndex = TargetSection._PageIndex
+							Window._ScrollOffset = 0
+							UpdateElementsVisibility()
+						end
 
 						local TargetScroll = TargetSection._PositionY - Theme.TitleBarHeight - 10
 						Window._ScrollOffset = math.clamp(TargetScroll, 0, Window._MaxScroll)
@@ -3493,7 +3851,7 @@ function Library:CreateWindow(WindowConfig)
 				end
 			end
 
-			for SectionIndex, ScrollableSection in ipairs(Window._Sections) do
+			for SectionIndex, ScrollableSection in ipairs(Window:GetActiveSections()) do
 				if ScrollableSection._MaxHeight and ScrollableSection._SectionMaxScroll > 0 then
 					local SectionAbsolutePosition = Window._Position + Vector2.new(ScrollableSection._PositionX, ScrollableSection._PositionY - Window._ScrollOffset)
 					local ScrollbarPositionX = SectionAbsolutePosition.X + ScrollableSection._Width - Theme.ScrollbarWidth - 2
@@ -3508,6 +3866,26 @@ function Library:CreateWindow(WindowConfig)
 						ScrollableSection._DraggingScrollbar = true
 						return
 					end
+				end
+			end
+
+			if Window._TabBarHeight > 0 then
+				local TabBarRegionPosition = Window._Position + Vector2.new(0, Theme.TitleBarHeight)
+				local TabBarRegionSize = Vector2.new(Theme.WindowWidth, Window._TabBarHeight)
+				if IsPointInsideRectangle(CurrentMousePosition, TabBarRegionPosition, TabBarRegionSize) then
+					local TabCount = #Window._Pages
+					local TabWidth = Theme.WindowWidth / TabCount
+					local RelativeX = CurrentMousePosition.X - TabBarRegionPosition.X
+					local PageClickedIndex = math.floor(RelativeX / TabWidth) + 1
+					PageClickedIndex = math.clamp(PageClickedIndex, 1, TabCount)
+					
+					if PageClickedIndex ~= Window._ActivePageIndex then
+						Window._ActivePageIndex = PageClickedIndex
+						Window._ScrollOffset = 0
+						UpdateElementsVisibility()
+						Window:RecalculateLayout()
+					end
+					return
 				end
 			end
 
@@ -3611,7 +3989,7 @@ function Library:CreateWindow(WindowConfig)
 				end
 			end
 
-			for SectionIndex, Section in ipairs(Window._Sections) do
+			for SectionIndex, Section in ipairs(Window:GetActiveSections()) do
 				for ElementIndex, Element in ipairs(Section._Elements) do
 					local ElementYPosition = Window._Position.Y + Element._PositionY - Window._ScrollOffset
 					local ElementRegionPosition = Vector2.new(Window._Position.X + Element._PositionX, ElementYPosition)
@@ -3679,6 +4057,22 @@ function Library:CreateWindow(WindowConfig)
 		end
 
 		for SectionIndex, Section in ipairs(Window._Sections) do
+			local IsActivePage = (not Section._PageIndex) or (Section._PageIndex == Window._ActivePageIndex)
+			if not IsActivePage then
+				Section._IsHovered = false
+				Section._ScrollbarHovered = false
+				for _, Element in ipairs(Section._Elements) do
+					Element._IsHovered = false
+					if Element._Type == "Slider" then
+						Element._IsThumbHovered = false
+					elseif Element._Type == "ColorPicker" then
+						Element._IsSwatchHovered = false
+					end
+				end
+			end
+		end
+
+		for SectionIndex, Section in ipairs(Window:GetActiveSections()) do
 			for ElementIndex, Element in ipairs(Section._Elements) do
 				local ElementYPosition = Window._Position.Y + Element._PositionY - Window._ScrollOffset
 				local ElementRegionPosition = Vector2.new(Window._Position.X + Element._PositionX, ElementYPosition)
@@ -3738,7 +4132,7 @@ function Library:CreateWindow(WindowConfig)
 			Window._ScrollbarHovered = IsPointInsideRectangle(CurrentMousePosition, Vector2.new(ScrollbarPosX - 2, ScrollbarPosY), ScrollbarSz)
 		end
 
-		for SectionIndex, ScrollableSection in ipairs(Window._Sections) do
+		for SectionIndex, ScrollableSection in ipairs(Window:GetActiveSections()) do
 			if ScrollableSection._MaxHeight and ScrollableSection._SectionMaxScroll > 0 then
 				local SectionAbsolutePosition = Window._Position + Vector2.new(ScrollableSection._PositionX, ScrollableSection._PositionY - Window._ScrollOffset)
 				local ScrollbarPosX = SectionAbsolutePosition.X + ScrollableSection._Width - Theme.ScrollbarWidth - 2
@@ -3812,7 +4206,7 @@ function Library:CreateWindow(WindowConfig)
 			end
 		end
 
-		if not UseImmediateMode then
+		if not UseImmediateMode and AnimationChanged then
 			Window:RecalculateLayout()
 		end
 	end))
@@ -3842,7 +4236,7 @@ function Library:CreateWindow(WindowConfig)
 			if Window._Destroyed or not Library._Visible or not Window._Visible then return end
 
 			local WindowPosition = Window._Position
-			local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight
+			local ViewportStart = WindowPosition.Y + Theme.TitleBarHeight + Window._TabBarHeight
 			local ViewportEnd = ViewportStart + Window._VisibleHeight
 			local WindowWidth = Theme.WindowWidth
 
@@ -3914,6 +4308,58 @@ function Library:CreateWindow(WindowConfig)
 			local SeparatorEnd = Vector2.new(WindowPosition.X + WindowWidth, WindowPosition.Y + Theme.TitleBarHeight)
 			DrawingImmediateLine(SeparatorStart, SeparatorEnd, Theme.TitleBarSeparator, 0.85, 2)
 
+			if Window._TabBarHeight > 0 then
+				local TabBarPos = WindowPosition + Vector2.new(0, Theme.TitleBarHeight)
+				local TabBarSize = Vector2.new(WindowWidth, Window._TabBarHeight)
+				DrawingImmediateFilledRectangle(TabBarPos, TabBarSize, Theme.TitleBarBackground, 1, 0)
+				DrawingImmediateLine(
+					TabBarPos + Vector2.new(0, Window._TabBarHeight),
+					TabBarPos + Vector2.new(WindowWidth, Window._TabBarHeight),
+					Theme.TitleBarSeparator,
+					0.85,
+					2
+				)
+
+				local TabCount = #Window._Pages
+				local TabWidth = WindowWidth / TabCount
+				for PageIndex, Page in ipairs(Window._Pages) do
+					local TabX = WindowPosition.X + (PageIndex - 1) * TabWidth
+					local TabY = WindowPosition.Y + Theme.TitleBarHeight
+					
+					local TextSize = GetTextBounds(Page.Title, Theme.ElementFontSize)
+					local TextX = TabX + (TabWidth - TextSize.X) / 2
+					local TextY = TabY + (Window._TabBarHeight - TextSize.Y) / 2
+
+					local IsActive = (PageIndex == Window._ActivePageIndex)
+					local HoverFactor = Page._HoverFactor or 0
+					
+					local BaseColor = IsActive and Theme.TitleBarText or Theme.LabelText
+					local TargetColor = IsActive and Theme.TitleBarTextHover or Theme.LabelTextHover
+					local TabColor = BaseColor:Lerp(TargetColor, HoverFactor)
+
+					DrawingImmediateText(
+						Vector2.new(TextX, TextY),
+						Theme.Font, Theme.ElementFontSize, TabColor, 1, Page.Title, false
+					)
+
+					if IsActive or HoverFactor > 0.01 then
+						local UnderlineY = TabY + Window._TabBarHeight - 2
+						local UnderlineWidth = TextSize.X + 10
+						local UnderlineX = TabX + (TabWidth - UnderlineWidth) / 2
+						local UnderlineAlpha = IsActive and 1 or HoverFactor
+						local UnderlineColor = Theme.TitleBarSeparator:Lerp(Theme.TitleBarTextHover, HoverFactor)
+
+						DrawingImmediateLine(
+							Vector2.new(UnderlineX, UnderlineY),
+							Vector2.new(UnderlineX + UnderlineWidth, UnderlineY),
+							UnderlineColor,
+							UnderlineAlpha,
+							2
+						)
+					end
+				end
+			end
+
 			local TitleTextX   = WindowPosition.X + Theme.InnerMargin + 12
 			local TitleTextY   = WindowPosition.Y + (Theme.TitleBarHeight - Theme.TitleFontSize) / 2 + 2
 			local TitleTextColor   = Theme.TitleBarText:Lerp(Theme.TitleBarTextHover, Window._TitleTextHoverFactor or 0)
@@ -3950,7 +4396,7 @@ function Library:CreateWindow(WindowConfig)
 				DrawingImmediateLine(SearchIconCenter + Vector2.new(3, 3), SearchIconCenter + Vector2.new(7, 7), SearchIconColor, 1, 1.5)
 			end
 
-			for SectionIndex, Section in ipairs(Window._Sections) do
+			for SectionIndex, Section in ipairs(Window:GetActiveSections()) do
 				local SectionYPosition = WindowPosition.Y + Section._PositionY - Window._ScrollOffset
 
 				local SectionFullHeight = Section._ContentHeight or Theme.ElementHeight
@@ -4433,7 +4879,7 @@ function Library:CreateWindow(WindowConfig)
 
 
 			if Window._SearchActive then
-				local SearchBarPosition = WindowPosition + Vector2.new(Theme.InnerMargin, Theme.TitleBarHeight + 6)
+				local SearchBarPosition = WindowPosition + Vector2.new(Theme.InnerMargin, Theme.TitleBarHeight + Window._TabBarHeight + 6)
 				local SearchBarSize = Vector2.new(Theme.WindowWidth - Theme.InnerMargin * 2, 20)
 				Window._SearchTextBoxRegion = { Position = SearchBarPosition, Size = SearchBarSize }
 
@@ -4570,7 +5016,7 @@ function Library:CreateWindow(WindowConfig)
 				local ButtonAreaHeight = 10 + 24 + 10
 				local PopupHeight = HeaderHeight + Margin + GridHeight + ButtonAreaHeight
 
-				local Camera = workspace.CurrentCamera
+				local Camera = Workspace.CurrentCamera
 				local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
 				local PopupX = WindowPosition.X + WindowWidth + 10
 				if PopupX + PopupWidth > ViewportSize.X - 8 then
@@ -4588,7 +5034,7 @@ function Library:CreateWindow(WindowConfig)
 				DrawingImmediateRectangle(PopupPosition, Vector2.new(PopupWidth, PopupHeight), Theme.WindowBorder, 1, 0, 1)
 
 				DrawingImmediateFilledRectangle(PopupPosition, Vector2.new(PopupWidth, HeaderHeight), Theme.TitleBarBackground, 1, 0)
-				DrawingImmediateText(Vector2.new(PopupPosition.X + Margin, PopupPosition.Y + (HeaderHeight - 12) / 2), Theme.Font, 12, Theme.TitleBarText, 1, "Select Color", false)
+				DrawingImmediateText(Vector2.new(PopupPosition.X + Margin, PopupPosition.Y + (HeaderHeight - 12) / 2), Theme.Font, 12, Theme.TitleBarText, 1, "Select color", false)
 
 				local GridStartY = PopupPosition.Y + HeaderHeight + Margin
 				for SwatchIndex = 1, #ColorPalette do
@@ -4658,6 +5104,43 @@ function Library:CreateWindow(WindowConfig)
 		end))
 		table.insert(Window._Connections, PaintConnection)
 	end
+
+		local function UpdateViewportScale()
+			local Camera = Workspace.CurrentCamera
+			local Viewport = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
+			local Scale = math.clamp(math.min(Viewport.X / 1920, Viewport.Y / 1080), 1.0, 2.0)
+			for ParameterKey, BaseValue in pairs(Theme.Base) do
+				Theme[ParameterKey] = BaseValue * Scale
+			end
+			Window._TabBarHeight = 28 * Scale
+			Window._VisibleHeight = Theme.WindowVisibleHeight
+		end
+
+		local ViewportConnection
+		local function ConnectViewport()
+			if ViewportConnection then
+				ViewportConnection:Disconnect()
+				ViewportConnection = nil
+			end
+			local Camera = Workspace.CurrentCamera
+			if Camera then
+				ViewportConnection = Camera:GetPropertyChangedSignal("ViewportSize"):Connect(NewCClosure(function()
+					UpdateViewportScale()
+					Window:RecalculateLayout()
+				end))
+				table.insert(Window._Connections, ViewportConnection)
+			end
+		end
+
+		local CameraConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(NewCClosure(function()
+			ConnectViewport()
+			UpdateViewportScale()
+			Window:RecalculateLayout()
+		end))
+		table.insert(Window._Connections, CameraConnection)
+
+		ConnectViewport()
+		UpdateViewportScale()
 
 		Window:RecalculateLayout()
 

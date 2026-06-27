@@ -2333,6 +2333,7 @@ function Library:CreateWindow(WindowConfig)
 						else
 							ApplyDrawingProperties(TabDrawings.UnderlineDrawing, { Visible = false })
 						end
+					end
 				end
 				if MaxTabScroll > 0 and Window._TabScrollbarDrawing then
 					local ScrollProgress = Window._TabScrollOffset / MaxTabScroll
@@ -4403,6 +4404,7 @@ function Library:CreateWindow(WindowConfig)
 								2
 							)
 						end
+					end
 				end
 				if MaxTabScroll > 0 then
 					local ScrollProgress = Window._TabScrollOffset / MaxTabScroll
@@ -5165,87 +5167,87 @@ function Library:CreateWindow(WindowConfig)
 		table.insert(Window._Connections, PaintConnection)
 	end
 
-		local function UpdateViewportScale()
-			local Camera = Workspace.CurrentCamera
-			local Viewport = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
-			local Scale = math.clamp(math.min(Viewport.X / 1920, Viewport.Y / 1080), 1.0, 2.0)
-			for ParameterKey, BaseValue in pairs(Theme.Base) do
-				Theme[ParameterKey] = BaseValue * Scale
-			end
-			Window._TabBarHeight = 28 * Scale
-			Window._VisibleHeight = Theme.WindowVisibleHeight
+	local function UpdateViewportScale()
+		local Camera = Workspace.CurrentCamera
+		local Viewport = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
+		local Scale = math.clamp(math.min(Viewport.X / 1920, Viewport.Y / 1080), 1.0, 2.0)
+		for ParameterKey, BaseValue in pairs(Theme.Base) do
+			Theme[ParameterKey] = BaseValue * Scale
 		end
+		Window._TabBarHeight = 28 * Scale
+		Window._VisibleHeight = Theme.WindowVisibleHeight
+	end
 
-		local ViewportConnection
-		local function ConnectViewport()
-			if ViewportConnection then
-				ViewportConnection:Disconnect()
-				ViewportConnection = nil
-			end
-			local Camera = Workspace.CurrentCamera
-			if Camera then
-				ViewportConnection = Camera:GetPropertyChangedSignal("ViewportSize"):Connect(NewCClosure(function()
-					UpdateViewportScale()
-					Window:RecalculateLayout()
-				end))
-				table.insert(Window._Connections, ViewportConnection)
-			end
+	local ViewportConnection
+	local function ConnectViewport()
+		if ViewportConnection then
+			ViewportConnection:Disconnect()
+			ViewportConnection = nil
 		end
+		local Camera = Workspace.CurrentCamera
+		if Camera then
+			ViewportConnection = Camera:GetPropertyChangedSignal("ViewportSize"):Connect(NewCClosure(function()
+				UpdateViewportScale()
+				Window:RecalculateLayout()
+			end))
+			table.insert(Window._Connections, ViewportConnection)
+		end
+	end
 
-		local CameraConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(NewCClosure(function()
-			ConnectViewport()
-			UpdateViewportScale()
-			Window:RecalculateLayout()
-		end))
-		table.insert(Window._Connections, CameraConnection)
-
+	local CameraConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(NewCClosure(function()
 		ConnectViewport()
 		UpdateViewportScale()
-
 		Window:RecalculateLayout()
+	end))
+	table.insert(Window._Connections, CameraConnection)
 
-		return Window
+	ConnectViewport()
+	UpdateViewportScale()
+
+	Window:RecalculateLayout()
+
+	return Window
+end
+
+function Library:SetInputBlocking(Type, Enabled)
+	local Priority = 1
+	local ExistingName = Library._ActiveSinks[Type]
+
+	if ExistingName then
+		UnbindCoreAction(ContextActionService, ExistingName)
+		Library._ActiveSinks[Type] = nil
 	end
 
-	function Library:SetInputBlocking(Type, Enabled)
-		local Priority = 1
-		local ExistingName = Library._ActiveSinks[Type]
+	if Enabled then
 
-		if ExistingName then
-			UnbindCoreAction(ContextActionService, ExistingName)
-			Library._ActiveSinks[Type] = nil
-		end
+		local NewName = RandomString(16)
+		Library._ActiveSinks[Type] = NewName
 
-		if Enabled then
-
-			local NewName = RandomString(16)
-			Library._ActiveSinks[Type] = NewName
-
-			if Type == "Scroll" then
-				BindCoreActionAtPriority(ContextActionService, NewName, function()
-					return Enum.ContextActionResult.Sink
-				end, false, Priority, Enum.UserInputType.MouseWheel)
-			elseif Type == "Camera" then
-				BindCoreActionAtPriority(ContextActionService, NewName, function()
-					return Enum.ContextActionResult.Sink
-				end, false, Priority,
-					Enum.UserInputType.MouseMovement,
-					Enum.UserInputType.MouseButton2,
-					Enum.UserInputType.MouseWheel
-				)
-			elseif Type == "Typing" then
-				local function TypingSink()
-					return Enum.ContextActionResult.Sink
-				end
-
-				BindCoreActionAtPriority(ContextActionService, NewName, TypingSink, false, Priority,
-					Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseWheel,
-					Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D, Enum.KeyCode.Space,
-					Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right,
-					Enum.KeyCode.I, Enum.KeyCode.O
-				)
+		if Type == "Scroll" then
+			BindCoreActionAtPriority(ContextActionService, NewName, function()
+				return Enum.ContextActionResult.Sink
+			end, false, Priority, Enum.UserInputType.MouseWheel)
+		elseif Type == "Camera" then
+			BindCoreActionAtPriority(ContextActionService, NewName, function()
+				return Enum.ContextActionResult.Sink
+			end, false, Priority,
+				Enum.UserInputType.MouseMovement,
+				Enum.UserInputType.MouseButton2,
+				Enum.UserInputType.MouseWheel
+			)
+		elseif Type == "Typing" then
+			local function TypingSink()
+				return Enum.ContextActionResult.Sink
 			end
+
+			BindCoreActionAtPriority(ContextActionService, NewName, TypingSink, false, Priority,
+				Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseWheel,
+				Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D, Enum.KeyCode.Space,
+				Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right,
+				Enum.KeyCode.I, Enum.KeyCode.O
+			)
 		end
 	end
+end
 
 return Library

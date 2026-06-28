@@ -5224,11 +5224,11 @@ function Library:SetInputBlocking(Type, Enabled)
 		Library._ActiveSinks[Type] = NewName
 
 		if Type == "Scroll" then
-			BindCoreActionAtPriority(ContextActionService, NewName, function()
+			BindCoreActionAtPriority(ContextActionService, NewName, function(ActionName, InputState, InputObject)
 				return Enum.ContextActionResult.Sink
 			end, false, Priority, Enum.UserInputType.MouseWheel)
 		elseif Type == "Camera" then
-			BindCoreActionAtPriority(ContextActionService, NewName, function()
+			BindCoreActionAtPriority(ContextActionService, NewName, function(ActionName, InputState, InputObject)
 				return Enum.ContextActionResult.Sink
 			end, false, Priority,
 				Enum.UserInputType.MouseMovement,
@@ -5236,7 +5236,7 @@ function Library:SetInputBlocking(Type, Enabled)
 				Enum.UserInputType.MouseWheel
 			)
 		elseif Type == "Typing" then
-			local function TypingSink()
+			local function TypingSink(ActionName, InputState, InputObject)
 				return Enum.ContextActionResult.Sink
 			end
 

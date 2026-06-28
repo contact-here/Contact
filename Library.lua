@@ -193,7 +193,7 @@ if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
 end
 
 if not DrawingIsNative then
-	local CustomDrawingLibraryLink = "https://raw.githubusercontent.com/placeholder-link-here/Drawing.lua"
+	local CustomDrawingLibraryLink = "https://github.com/contact-here/Contact/blob/main/DrawingLibrary.lua"
 	local RawHttpGet = game.HttpGet
 	local RawRequestFunction = request or http_request or (syn and syn.request)
 	local FetchedContent

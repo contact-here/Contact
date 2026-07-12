@@ -237,8 +237,6 @@ if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
 end
 
 if not DrawingIsNative then
-	-- Placeholder link is intentionally isolated here so a real custom backend
-	-- can be dropped in without changing rendering code below.
 	local CustomDrawingLibraryLink = "https://raw.githubusercontent.com/contact-here/Contact/refs/heads/main/DrawingLibrary.lua"
 	local RawHttpGet = CloneFunction(DataModel.HttpGet)
 	local RawRequestFunction = request or http_request or (syn and syn.request)
@@ -617,7 +615,7 @@ local function TextAvailableWidth(ElementWidth, FontSize)
 	return ElementWidth - FontHorizontalInset(FontSize) * 2
 end
 
-ContactGetEditableTextCharacterWidth = function(FontSize)
+GetEditableTextCharacterWidth = function(FontSize)
 	-- Text boxes use a tighter width than wrapped paragraphs because Drawing
 	-- renders the selected monospaced font narrower than the old conservative
 	-- clipping multiplier. Keeping this in one helper makes cursor, selection,
@@ -666,7 +664,7 @@ local function GetTextBoxSuggestionDropdownHeight(Element)
 	return 2 + SuggestionCount * 22
 end
 
-ContactGetDropdownVisibleItemCount = function(Element)
+GetDropdownVisibleItemCount = function(Element)
 	-- Long dynamic dropdowns, such as class lists, should scroll inside their
 	-- own option area instead of stretching the whole section to every item.
 	if not Element or not Element._Expanded then
@@ -676,39 +674,39 @@ ContactGetDropdownVisibleItemCount = function(Element)
 	return math.min(#(Element._Options or {}), Element._MaximumVisibleItems or 8)
 end
 
-ContactGetDropdownOptionsHeight = function(Element)
-	return ContactGetDropdownVisibleItemCount(Element) * Theme.ElementHeight
+GetDropdownOptionsHeight = function(Element)
+	return GetDropdownVisibleItemCount(Element) * Theme.ElementHeight
 end
 
-ContactGetDropdownMaximumScroll = function(Element)
-	local HiddenItemCount = math.max(0, #(Element._Options or {}) - ContactGetDropdownVisibleItemCount(Element))
+GetDropdownMaximumScroll = function(Element)
+	local HiddenItemCount = math.max(0, #(Element._Options or {}) - GetDropdownVisibleItemCount(Element))
 	return HiddenItemCount * Theme.ElementHeight
 end
 
-ContactClampDropdownScrollOffset = function(Element)
+ClampDropdownScrollOffset = function(Element)
 	if not Element then
 		return 0
 	end
 
-	Element._OptionsScrollOffset = math.clamp(Element._OptionsScrollOffset or 0, 0, ContactGetDropdownMaximumScroll(Element))
+	Element._OptionsScrollOffset = math.clamp(Element._OptionsScrollOffset or 0, 0, GetDropdownMaximumScroll(Element))
 	return Element._OptionsScrollOffset
 end
 
-ContactClampTextBoxCursorIndex = function(Element, CursorIndex)
+ClampTextBoxCursorIndex = function(Element, CursorIndex)
 	-- Cursor indices live between characters, so the valid range is
 	-- one through string length plus one.
 	local TextLength = #(Element._Value or "")
 	return math.clamp(tonumber(CursorIndex) or TextLength + 1, 1, TextLength + 1)
 end
 
-ContactSetTextBoxCursorIndex = function(Element, CursorIndex)
-	Element._CursorIndex = ContactClampTextBoxCursorIndex(Element, CursorIndex)
+SetTextBoxCursorIndex = function(Element, CursorIndex)
+	Element._CursorIndex = ClampTextBoxCursorIndex(Element, CursorIndex)
 	if not Element._SelectionDragging then
 		Element._SelectionAnchorIndex = Element._CursorIndex
 	end
 end
 
-ContactSetTextBoxSelectionRange = function(Element, StartIndex, EndIndex)
+SetTextBoxSelectionRange = function(Element, StartIndex, EndIndex)
 	-- A selection is represented as a half-open range: StartIndex is included
 	-- and EndIndex points to the cursor slot after the last selected character.
 	local TextLength = #(Element._Value or "")
@@ -721,14 +719,14 @@ ContactSetTextBoxSelectionRange = function(Element, StartIndex, EndIndex)
 	Element._IsSelected = ClampedStartIndex ~= ClampedEndIndex
 end
 
-ContactClearTextBoxSelection = function(Element)
+ClearTextBoxSelection = function(Element)
 	Element._SelectionStartIndex = nil
 	Element._SelectionEndIndex = nil
-	Element._SelectionAnchorIndex = Element._CursorIndex or ContactClampTextBoxCursorIndex(Element)
+	Element._SelectionAnchorIndex = Element._CursorIndex or ClampTextBoxCursorIndex(Element)
 	Element._IsSelected = false
 end
 
-ContactGetTextBoxSelectionBounds = function(Element)
+GetTextBoxSelectionBounds = function(Element)
 	if not Element._IsSelected or not Element._SelectionStartIndex or not Element._SelectionEndIndex then
 		return nil, nil
 	end
@@ -742,8 +740,8 @@ ContactGetTextBoxSelectionBounds = function(Element)
 	return StartIndex, EndIndex
 end
 
-ContactGetTextBoxSelectedText = function(Element)
-	local StartIndex, EndIndex = ContactGetTextBoxSelectionBounds(Element)
+GetTextBoxSelectedText = function(Element)
+	local StartIndex, EndIndex = GetTextBoxSelectionBounds(Element)
 	if not StartIndex then
 		return ""
 	end
@@ -751,11 +749,11 @@ ContactGetTextBoxSelectedText = function(Element)
 	return string.sub(Element._Value or "", StartIndex, EndIndex - 1)
 end
 
-ContactReplaceTextBoxSelection = function(Element, ReplacementText)
+ReplaceTextBoxSelection = function(Element, ReplacementText)
 	local CurrentValue = Element._Value or ""
-	local StartIndex, EndIndex = ContactGetTextBoxSelectionBounds(Element)
+	local StartIndex, EndIndex = GetTextBoxSelectionBounds(Element)
 	if not StartIndex then
-		StartIndex = ContactClampTextBoxCursorIndex(Element)
+		StartIndex = ClampTextBoxCursorIndex(Element)
 		EndIndex = StartIndex
 	end
 
@@ -763,11 +761,11 @@ ContactReplaceTextBoxSelection = function(Element, ReplacementText)
 	local SuffixText = string.sub(CurrentValue, EndIndex)
 	local NewValue = string.format("%s%s%s", PrefixText, tostring(ReplacementText or ""), SuffixText)
 	Element:SetValue(NewValue)
-	ContactSetTextBoxCursorIndex(Element, StartIndex + #(ReplacementText or ""))
-	ContactClearTextBoxSelection(Element)
+	SetTextBoxCursorIndex(Element, StartIndex + #(ReplacementText or ""))
+	ClearTextBoxSelection(Element)
 end
 
-ContactGetFocusedTextBoxDisplayOffset = function(Element, MaximumCharacters)
+GetFocusedTextBoxDisplayOffset = function(Element, MaximumCharacters)
 	local TextLength = #(Element._Value or "")
 	local SafeMaximumCharacters = math.max(1, tonumber(MaximumCharacters) or 1)
 	local MaximumDisplayOffset = math.max(1, TextLength - SafeMaximumCharacters + 1)
@@ -777,7 +775,7 @@ ContactGetFocusedTextBoxDisplayOffset = function(Element, MaximumCharacters)
 	-- string, which made the caret appear far away from the selected text.
 	local DisplayOffset = math.clamp(tonumber(Element._DisplayOffset) or 1, 1, MaximumDisplayOffset)
 	if Element._IsFocused then
-		local CursorIndex = ContactClampTextBoxCursorIndex(Element, Element._CursorIndex)
+		local CursorIndex = ClampTextBoxCursorIndex(Element, Element._CursorIndex)
 		if CursorIndex < DisplayOffset then
 			DisplayOffset = CursorIndex
 		elseif CursorIndex > DisplayOffset + SafeMaximumCharacters then
@@ -793,21 +791,21 @@ ContactGetFocusedTextBoxDisplayOffset = function(Element, MaximumCharacters)
 	return Element._DisplayOffset
 end
 
-ContactGetVisibleTextBoxCharacterRange = function(Element, MaximumCharacters)
+GetVisibleTextBoxCharacterRange = function(Element, MaximumCharacters)
 	local TextLength = #(Element._Value or "")
-	local DisplayOffset = ContactGetFocusedTextBoxDisplayOffset(Element, MaximumCharacters)
+	local DisplayOffset = GetFocusedTextBoxDisplayOffset(Element, MaximumCharacters)
 	local DisplayEndIndex = math.min(TextLength + 1, DisplayOffset + MaximumCharacters)
 	return DisplayOffset, DisplayEndIndex
 end
 
-ContactGetTextBoxCharacterIndexFromMouseX = function(Element, MousePositionX, InputStartX, CharacterWidth, MaximumCharacters)
-	local DisplayOffset = ContactGetFocusedTextBoxDisplayOffset(Element, MaximumCharacters)
+GetTextBoxCharacterIndexFromMouseX = function(Element, MousePositionX, InputStartX, CharacterWidth, MaximumCharacters)
+	local DisplayOffset = GetFocusedTextBoxDisplayOffset(Element, MaximumCharacters)
 	local RelativePositionX = math.max(0, MousePositionX - InputStartX)
 	local CharacterOffset = math.floor((RelativePositionX / CharacterWidth) + 0.5)
-	return ContactClampTextBoxCursorIndex(Element, DisplayOffset + CharacterOffset)
+	return ClampTextBoxCursorIndex(Element, DisplayOffset + CharacterOffset)
 end
 
-ContactGetTextBoxVisibleText = function(Element, DisplayText, MaximumCharacters, HasValue)
+GetTextBoxVisibleText = function(Element, DisplayText, MaximumCharacters, HasValue)
 	-- The rendered value uses the exact viewport that cursor and selection
 	-- geometry use. This keeps every backend aligned while still truncating
 	-- placeholders and inactive values with a readable ASCII ellipsis.
@@ -818,19 +816,19 @@ ContactGetTextBoxVisibleText = function(Element, DisplayText, MaximumCharacters,
 	end
 
 	if Element._IsFocused and HasValue then
-		local DisplayOffset = ContactGetFocusedTextBoxDisplayOffset(Element, SafeMaximumCharacters)
+		local DisplayOffset = GetFocusedTextBoxDisplayOffset(Element, SafeMaximumCharacters)
 		return string.sub(SafeDisplayText, DisplayOffset, DisplayOffset + SafeMaximumCharacters - 1)
 	end
 
 	return TruncateTextWithAsciiEllipsis(SafeDisplayText, SafeMaximumCharacters)
 end
 
-ContactGetTextBoxLayoutMetrics = function(Element, TextBoxPosition, TextBoxWidth)
+GetTextBoxLayoutMetrics = function(Element, TextBoxPosition, TextBoxWidth)
 	-- All text-box rendering and hit testing passes through this function. Long
 	-- labels automatically move above the editable value when an inline layout
 	-- would leave too little room for useful input.
 	local SafeWidth = math.max(1, tonumber(TextBoxWidth) or 1)
-	local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+	local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 	local HorizontalInset = math.max(6, FontHorizontalInset(Theme.ElementFontSize))
 	local LabelText = Element._Text and tostring(Element._Text) or ""
 	local LabelDisplayText = LabelText ~= "" and string.format("%s:", LabelText) or ""
@@ -876,7 +874,7 @@ ContactGetTextBoxLayoutMetrics = function(Element, TextBoxPosition, TextBoxWidth
 	}
 end
 
-ContactConfigureElementTooltip = function(Element, ElementConfiguration)
+ConfigureElementTooltip = function(Element, ElementConfiguration)
 	-- Interactive controls opt into delayed explanatory tooltips through one
 	-- common field. SetTooltip also lets asynchronous features update their
 	-- description after remote data becomes available.
@@ -903,7 +901,7 @@ ContactConfigureElementTooltip = function(Element, ElementConfiguration)
 	end
 end
 
-ContactGetTooltipGeometry = function(Window, MousePosition)
+GetTooltipGeometry = function(Window, MousePosition)
 	local Element = Window and Window._HoveredTooltipElement or nil
 	if not Element or not Window._Visible or Element._Tooltip == "" or not Element._TooltipHoverStartedAt then
 		return nil
@@ -923,7 +921,7 @@ ContactGetTooltipGeometry = function(Window, MousePosition)
 	end
 	if #WrappedLines == Theme.TooltipMaximumLines then
 		local LastLineIndex = #WrappedLines
-		local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)))
+		local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / GetEditableTextCharacterWidth(Theme.ElementFontSize)))
 		WrappedLines[LastLineIndex] = TruncateTextWithAsciiEllipsis(WrappedLines[LastLineIndex], MaximumCharacters)
 	end
 
@@ -1152,14 +1150,14 @@ local function ClipHorizontalLineToYRange(FromPosition, ToPosition, MinimumPosit
 	end
 end
 
-ContactDrawImmediateTextBoxSelectionAndCursor = function(Element, InputStartX, InputTextPositionY, CharacterWidth, MaximumCharacters, AllowedMinY, AllowedMaxY, HasValue)
+DrawImmediateTextBoxSelectionAndCursor = function(Element, InputStartX, InputTextPositionY, CharacterWidth, MaximumCharacters, AllowedMinY, AllowedMaxY, HasValue)
 	-- Immediate Drawing mode has no retained cursor object, so selection and
 	-- cursor geometry are painted directly each frame from the same index model
 	-- used by keyboard editing. This helper stays outside the large CreateWindow
 	-- closure so Luau's upvalue limit is not exceeded.
 	if Element._IsSelected and HasValue then
-		local SelectionStartIndex, SelectionEndIndex = ContactGetTextBoxSelectionBounds(Element)
-		local DisplayStartIndex, DisplayEndIndex = ContactGetVisibleTextBoxCharacterRange(Element, MaximumCharacters)
+		local SelectionStartIndex, SelectionEndIndex = GetTextBoxSelectionBounds(Element)
+		local DisplayStartIndex, DisplayEndIndex = GetVisibleTextBoxCharacterRange(Element, MaximumCharacters)
 		local VisibleSelectionStartIndex = SelectionStartIndex and math.max(SelectionStartIndex, DisplayStartIndex)
 		local VisibleSelectionEndIndex = SelectionEndIndex and math.min(SelectionEndIndex, DisplayEndIndex)
 		if VisibleSelectionStartIndex and VisibleSelectionEndIndex and VisibleSelectionStartIndex < VisibleSelectionEndIndex then
@@ -1175,8 +1173,8 @@ ContactDrawImmediateTextBoxSelectionAndCursor = function(Element, InputStartX, I
 	end
 
 	if Element._IsFocused and Element._CursorVisible then
-		local DisplayStartIndex, DisplayEndIndex = ContactGetVisibleTextBoxCharacterRange(Element, MaximumCharacters)
-		local CursorIndex = math.clamp(ContactClampTextBoxCursorIndex(Element, Element._CursorIndex), DisplayStartIndex, DisplayEndIndex)
+		local DisplayStartIndex, DisplayEndIndex = GetVisibleTextBoxCharacterRange(Element, MaximumCharacters)
+		local CursorIndex = math.clamp(ClampTextBoxCursorIndex(Element, Element._CursorIndex), DisplayStartIndex, DisplayEndIndex)
 		local CursorX = InputStartX + (CursorIndex - DisplayStartIndex) * CharacterWidth
 		local CursorTopY = InputTextPositionY
 		local CursorBottomY = CursorTopY + Theme.ElementFontSize
@@ -1492,7 +1490,7 @@ Library._Visible = true
 
 Library.ToggleKey = Enum.KeyCode.RightControl
 
-ContactTextEntryInputObjects = {
+TextEntryInputObjects = {
 	Enum.UserInputType.MouseButton1,
 	Enum.UserInputType.MouseWheel,
 	Enum.KeyCode.A, Enum.KeyCode.B, Enum.KeyCode.C, Enum.KeyCode.D, Enum.KeyCode.E, Enum.KeyCode.F,
@@ -1569,7 +1567,7 @@ function Library:ProcessMouseWheel(Input)
 								ActiveDropdown._OptionsScrollOffset = math.clamp(
 									(ActiveDropdown._OptionsScrollOffset or 0) - Delta,
 									0,
-									ContactGetDropdownMaximumScroll(ActiveDropdown)
+									GetDropdownMaximumScroll(ActiveDropdown)
 								)
 								Window:RecalculateLayout()
 								return true
@@ -1672,27 +1670,27 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 
 					if Input.KeyCode == Enum.KeyCode.Backspace then
 						if FocusedBox._IsSelected then
-							ContactReplaceTextBoxSelection(FocusedBox, "")
+							ReplaceTextBoxSelection(FocusedBox, "")
 						else
-							local CursorIndex = ContactClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
+							local CursorIndex = ClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
 							if CursorIndex > 1 then
 								FocusedBox._SelectionStartIndex = CursorIndex - 1
 								FocusedBox._SelectionEndIndex = CursorIndex
 								FocusedBox._IsSelected = true
-								ContactReplaceTextBoxSelection(FocusedBox, "")
+								ReplaceTextBoxSelection(FocusedBox, "")
 							end
 						end
 						return true
 					elseif Input.KeyCode == Enum.KeyCode.Delete then
 						if FocusedBox._IsSelected then
-							ContactReplaceTextBoxSelection(FocusedBox, "")
+							ReplaceTextBoxSelection(FocusedBox, "")
 						else
-							local CursorIndex = ContactClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
+							local CursorIndex = ClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
 							if CursorIndex <= #FocusedBox._Value then
 								FocusedBox._SelectionStartIndex = CursorIndex
 								FocusedBox._SelectionEndIndex = CursorIndex + 1
 								FocusedBox._IsSelected = true
-								ContactReplaceTextBoxSelection(FocusedBox, "")
+								ReplaceTextBoxSelection(FocusedBox, "")
 							end
 						end
 						return true
@@ -1716,8 +1714,8 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 						-- Cursor navigation uses the same half-open index model as mouse
 						-- selection. Holding Shift extends the active range; moving without
 						-- Shift collapses an existing selection in the expected direction.
-						local CurrentCursorIndex = ContactClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
-						local SelectionStartIndex, SelectionEndIndex = ContactGetTextBoxSelectionBounds(FocusedBox)
+						local CurrentCursorIndex = ClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
+						local SelectionStartIndex, SelectionEndIndex = GetTextBoxSelectionBounds(FocusedBox)
 						local TargetCursorIndex = CurrentCursorIndex
 
 						if Input.KeyCode == Enum.KeyCode.Home then
@@ -1733,10 +1731,10 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 						TargetCursorIndex = TargetCursorIndex or CurrentCursorIndex
 						if ShiftHeld then
 							local SelectionAnchorIndex = FocusedBox._SelectionAnchorIndex or CurrentCursorIndex
-							ContactSetTextBoxSelectionRange(FocusedBox, SelectionAnchorIndex, TargetCursorIndex)
+							SetTextBoxSelectionRange(FocusedBox, SelectionAnchorIndex, TargetCursorIndex)
 						else
-							ContactSetTextBoxCursorIndex(FocusedBox, TargetCursorIndex)
-							ContactClearTextBoxSelection(FocusedBox)
+							SetTextBoxCursorIndex(FocusedBox, TargetCursorIndex)
+							ClearTextBoxSelection(FocusedBox)
 						end
 
 						FocusedBox._CursorVisible = true
@@ -1751,27 +1749,27 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 					elseif Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter or Input.KeyCode == Enum.KeyCode.Escape then
 						FocusedBox._IsFocused = false
 						FocusedBox._SelectionDragging = false
-						ContactClearTextBoxSelection(FocusedBox)
+						ClearTextBoxSelection(FocusedBox)
 						FocusedBox._CursorVisible = false
 						Window:SetInputBlocking("Typing", false)
 						return false
 					elseif Input.KeyCode == Enum.KeyCode.Space then
-						ContactReplaceTextBoxSelection(FocusedBox, " ")
+						ReplaceTextBoxSelection(FocusedBox, " ")
 						return true
 					elseif CtrlHeld and Input.KeyCode == Enum.KeyCode.V then
 						local ClipboardText = GetClipboard()
 
 						if ClipboardText and #ClipboardText > 0 then
-							ContactReplaceTextBoxSelection(FocusedBox, ClipboardText)
+							ReplaceTextBoxSelection(FocusedBox, ClipboardText)
 						end
 						return false
 					elseif CtrlHeld and Input.KeyCode == Enum.KeyCode.C then
-						local SelectedText = ContactGetTextBoxSelectedText(FocusedBox)
+						local SelectedText = GetTextBoxSelectedText(FocusedBox)
 						SetClipboard(SelectedText ~= "" and SelectedText or FocusedBox._Value)
 						return false
 					elseif CtrlHeld and Input.KeyCode == Enum.KeyCode.A then
 
-						ContactSetTextBoxSelectionRange(FocusedBox, 1, #FocusedBox._Value + 1)
+						SetTextBoxSelectionRange(FocusedBox, 1, #FocusedBox._Value + 1)
 						return false
 					elseif not CtrlHeld then
 						local Character = GetStringForKeyCode(UserInputService, Input.KeyCode)
@@ -1789,7 +1787,7 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 								Character = string.lower(Character)
 							end
 
-							ContactReplaceTextBoxSelection(FocusedBox, Character)
+							ReplaceTextBoxSelection(FocusedBox, Character)
 
 							return true
 						end
@@ -2418,7 +2416,7 @@ function Library:CreateWindow(WindowConfiguration)
 		_Placeholder = string.format("Search elements%s", AsciiEllipsis),
 		SetValue = NewCClosure(function(Self, NewValue)
 			Self._Value = tostring(NewValue or "")
-			Self._CursorIndex = ContactClampTextBoxCursorIndex(Self, Self._CursorIndex)
+			Self._CursorIndex = ClampTextBoxCursorIndex(Self, Self._CursorIndex)
 			Window:PerformSearch()
 		end)
 	}
@@ -2604,7 +2602,7 @@ function Library:CreateWindow(WindowConfiguration)
 					end
 					Element._Height = TextBlockHeight(#Element._WrappedLines, Theme.ElementFontSize)
 				elseif Element._Type == "TextBox" then
-					local TextBoxMetrics = ContactGetTextBoxLayoutMetrics(
+					local TextBoxMetrics = GetTextBoxLayoutMetrics(
 						Element,
 						Vector2.new(0, 0),
 						Element._Width
@@ -2625,12 +2623,12 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._SwatchPositionY = Element._PositionY + (Element._Height - Element._SwatchSize) / 2
 				elseif Element._Type == "Dropdown" then
 					local ItemVerticalOffset = Element._PositionY + Element._Height
-					local DropdownScrollOffset = ContactClampDropdownScrollOffset(Element)
+					local DropdownScrollOffset = ClampDropdownScrollOffset(Element)
 					Element._OptionsRegion = nil
 					if Element._Expanded then
 						Element._OptionsRegion = {
 							Position = WindowPosition + Vector2.new(Element._PositionX, ItemVerticalOffset - Window._ScrollOffset),
-							Size = Vector2.new(Element._Width, ContactGetDropdownOptionsHeight(Element)),
+							Size = Vector2.new(Element._Width, GetDropdownOptionsHeight(Element)),
 						}
 					end
 					for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects) do
@@ -2649,7 +2647,7 @@ function Library:CreateWindow(WindowConfiguration)
 				SectionContentHeight = SectionContentHeight + Element._Height + CurrentPadding
 
 				if Element._Type == "Dropdown" and Element._Expanded then
-					SectionContentHeight = SectionContentHeight + ContactGetDropdownOptionsHeight(Element)
+					SectionContentHeight = SectionContentHeight + GetDropdownOptionsHeight(Element)
 				end
 
 				if not UseImmediateMode then
@@ -2736,7 +2734,7 @@ function Library:CreateWindow(WindowConfiguration)
 						end
 						if Element._TextDrawing then
 							local AvailableTextWidth = ElementAbsoluteSize.X - 20
-							local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+							local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 							local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
 							local DisplayText = TruncateTextWithAsciiEllipsis(Element._Text, MaximumCharacters)
 							ApplyDrawingProperties(Element._TextDrawing, {
@@ -2804,7 +2802,7 @@ function Library:CreateWindow(WindowConfiguration)
 							end
 						end
 					elseif Element._Type == "TextBox" then
-						local TextBoxMetrics = ContactGetTextBoxLayoutMetrics(Element, ElementAbsolutePosition, ElementAbsoluteSize.X)
+						local TextBoxMetrics = GetTextBoxLayoutMetrics(Element, ElementAbsolutePosition, ElementAbsoluteSize.X)
 						local TextBoxBaseHeight = TextBoxMetrics.BaseHeight
 						local TextBoxBaseSize = Vector2.new(ElementAbsoluteSize.X, TextBoxBaseHeight)
 
@@ -2863,7 +2861,7 @@ function Library:CreateWindow(WindowConfiguration)
 							local InputStartX = TextBoxMetrics.InputStartX
 							local CharacterWidth = TextBoxMetrics.CharacterWidth
 							local MaxChars = TextBoxMetrics.MaximumCharacters
-							local ClippedText = ContactGetTextBoxVisibleText(Element, DisplayText, MaxChars, HasValue)
+							local ClippedText = GetTextBoxVisibleText(Element, DisplayText, MaxChars, HasValue)
 							ApplyDrawingProperties(Element._TextDrawing, {
 								Position = Vector2.new(InputStartX, TextBoxMetrics.InputTextPositionY),
 								Text = ClippedText,
@@ -2873,8 +2871,8 @@ function Library:CreateWindow(WindowConfiguration)
 							})
 
 							if Element._CursorDrawing then
-								local DisplayStartIndex, DisplayEndIndex = ContactGetVisibleTextBoxCharacterRange(Element, MaxChars)
-								local CursorIndex = math.clamp(ContactClampTextBoxCursorIndex(Element, Element._CursorIndex), DisplayStartIndex, DisplayEndIndex)
+								local DisplayStartIndex, DisplayEndIndex = GetVisibleTextBoxCharacterRange(Element, MaxChars)
+								local CursorIndex = math.clamp(ClampTextBoxCursorIndex(Element, Element._CursorIndex), DisplayStartIndex, DisplayEndIndex)
 								local CursorX = InputStartX + (CursorIndex - DisplayStartIndex) * CharacterWidth
 								local CursorTopY = TextBoxMetrics.InputTextPositionY
 								local CursorBotY = CursorTopY + Theme.ElementFontSize
@@ -2893,8 +2891,8 @@ function Library:CreateWindow(WindowConfiguration)
 								local InputStartX = TextBoxMetrics.InputStartX
 								local CharacterWidth = TextBoxMetrics.CharacterWidth
 								local MaxChars = TextBoxMetrics.MaximumCharacters
-								local SelectionStartIndex, SelectionEndIndex = ContactGetTextBoxSelectionBounds(Element)
-								local DisplayStartIndex, DisplayEndIndex = ContactGetVisibleTextBoxCharacterRange(Element, MaxChars)
+								local SelectionStartIndex, SelectionEndIndex = GetTextBoxSelectionBounds(Element)
+								local DisplayStartIndex, DisplayEndIndex = GetVisibleTextBoxCharacterRange(Element, MaxChars)
 								local VisibleSelectionStartIndex = SelectionStartIndex and math.max(SelectionStartIndex, DisplayStartIndex)
 								local VisibleSelectionEndIndex = SelectionEndIndex and math.min(SelectionEndIndex, DisplayEndIndex)
 								if VisibleSelectionStartIndex and VisibleSelectionEndIndex and VisibleSelectionStartIndex < VisibleSelectionEndIndex then
@@ -2989,7 +2987,7 @@ function Library:CreateWindow(WindowConfiguration)
 						end
 						if Element._TextDrawing then
 							local AvailableTextWidth = ElementAbsoluteSize.X - 32
-							local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+							local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 							local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
 							local FullText = string.format("%s: %s", Element._Text, Element._Value)
 							local DisplayText = TruncateTextWithAsciiEllipsis(FullText, MaximumCharacters)
@@ -3048,7 +3046,7 @@ function Library:CreateWindow(WindowConfiguration)
 								end
 								if ItemData.TextDrawing then
 									local AvailableItemTextWidth = ElementAbsoluteSize.X - 24
-									local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+									local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 									local MaximumCharacters = math.max(1, math.floor(AvailableItemTextWidth / CharacterWidth))
 									local DisplayItemText = TruncateTextWithAsciiEllipsis(ItemData.Value, MaximumCharacters)
 									ApplyDrawingProperties(ItemData.TextDrawing, {
@@ -3678,9 +3676,9 @@ function Library:CreateWindow(WindowConfiguration)
 				local SearchDisplayText = HasSearchValue and Window._SearchTextBox._Value or Window._SearchTextBox._Placeholder
 
 				local AvailableQueryWidth = SearchBarSize.X - 32
-				local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+				local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 				local MaxQueryChars = math.max(1, math.floor(AvailableQueryWidth / CharacterWidth))
-				SearchDisplayText = ContactGetTextBoxVisibleText(
+				SearchDisplayText = GetTextBoxVisibleText(
 					Window._SearchTextBox,
 					SearchDisplayText,
 					MaxQueryChars,
@@ -3789,7 +3787,7 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 			end
 
-			local TooltipGeometry = ContactGetTooltipGeometry(Window, GetMouseLocation(UserInputService))
+			local TooltipGeometry = GetTooltipGeometry(Window, GetMouseLocation(UserInputService))
 			if TooltipGeometry then
 				ApplyDrawingProperties(Window._TooltipBackgroundDrawing, {
 					Position = TooltipGeometry.Position,
@@ -3966,7 +3964,7 @@ function Library:CreateWindow(WindowConfiguration)
 		if not ShouldBeVisible then
 			-- Hidden windows must release every capture request immediately. Keeping
 			-- a focused text box or drag operation alive would continue sinking
-			-- Roblox input even though no Contact control is visible.
+			-- Roblox input even though no control is visible.
 			Window._Dragging = false
 			Window._Resizing = false
 			Window._DraggingScrollbar = false
@@ -3985,7 +3983,7 @@ function Library:CreateWindow(WindowConfiguration)
 						Element._IsFocused = false
 						Element._CursorVisible = false
 						Element._SelectionDragging = false
-						ContactClearTextBoxSelection(Element)
+						ClearTextBoxSelection(Element)
 					end
 				end
 			end
@@ -3994,7 +3992,7 @@ function Library:CreateWindow(WindowConfiguration)
 				Window._SearchTextBox._IsFocused = false
 				Window._SearchTextBox._CursorVisible = false
 				Window._SearchTextBox._SelectionDragging = false
-				ContactClearTextBoxSelection(Window._SearchTextBox)
+				ClearTextBoxSelection(Window._SearchTextBox)
 			end
 
 			Window:SetInputBlocking("Scroll", false)
@@ -4241,7 +4239,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionY = 0
 			Element._Width = 0
 			Element._IsHovered = false
-			ContactConfigureElementTooltip(Element, LabelConfiguration)
+			ConfigureElementTooltip(Element, LabelConfiguration)
 
 			Element._LineDrawings = {}
 			Element._InlineVisualDrawings = {}
@@ -4363,7 +4361,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._CursorBlinkTime = 0
 			Element._IsHovered = false
 			Element._DisplayOffset = 1
-			ContactConfigureElementTooltip(Element, TextBoxConfiguration)
+			ConfigureElementTooltip(Element, TextBoxConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.TextBoxBackground, true, 10, 0.95)
@@ -4416,8 +4414,8 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._SelectionAnchorIndex = Element._CursorIndex
 					Element._DisplayOffset = 1
 				end
-				Element._CursorIndex = ContactClampTextBoxCursorIndex(Element, Element._CursorIndex)
-				Element._SelectionAnchorIndex = ContactClampTextBoxCursorIndex(Element, Element._SelectionAnchorIndex)
+				Element._CursorIndex = ClampTextBoxCursorIndex(Element, Element._CursorIndex)
+				Element._SelectionAnchorIndex = ClampTextBoxCursorIndex(Element, Element._SelectionAnchorIndex)
 				if Element._TextDrawing then
 					local HasValue = Element._Value ~= ""
 					SetRenderProperty(Element._TextDrawing, "Text", HasValue and Element._Value or Element._Placeholder)
@@ -4519,7 +4517,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionX = 0
 			Element._PositionY = 0
 			Element._Width = 0
-			ContactConfigureElementTooltip(Element, ButtonConfiguration)
+			ConfigureElementTooltip(Element, ButtonConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.ButtonBackground, true, 10, 0.95)
@@ -4566,7 +4564,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionX = 0
 			Element._PositionY = 0
 			Element._Width = 0
-			ContactConfigureElementTooltip(Element, ToggleConfiguration)
+			ConfigureElementTooltip(Element, ToggleConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.ButtonBackground, true, 10, 0.95)
@@ -4647,7 +4645,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionX = 0
 			Element._PositionY = 0
 			Element._Width = 0
-			ContactConfigureElementTooltip(Element, DropdownConfiguration)
+			ConfigureElementTooltip(Element, DropdownConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.DropdownBackground, true, 10, 0.95)
@@ -4713,7 +4711,7 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._OptionsRegion = nil
 				end
 
-				ContactClampDropdownScrollOffset(Element)
+				ClampDropdownScrollOffset(Element)
 
 				if Element._ArrowDrawing then
 					SetRenderProperty(Element._ArrowDrawing, "Text", Element._Expanded and "^" or "v")
@@ -4847,7 +4845,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionY = 0
 			Element._Width = 0
 			Element._IsHovered = false
-			ContactConfigureElementTooltip(Element, SliderConfiguration)
+			ConfigureElementTooltip(Element, SliderConfiguration)
 			Element._IsThumbHovered = false
 
 			local function SnapToIncrement(RawValue)
@@ -4942,7 +4940,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._Width = 0
 			Element._IsHovered = false
 			Element._HoveredSwatchIndex = nil
-			ContactConfigureElementTooltip(Element, ColorPickerConfiguration)
+			ConfigureElementTooltip(Element, ColorPickerConfiguration)
 
 			for PaletteIndex, PaletteColor in ipairs(ColorPalette) do
 				if PaletteColor == ColorPickerConfiguration.Default then
@@ -5428,7 +5426,7 @@ function Library:CreateWindow(WindowConfiguration)
 					FocusElement._IsFocused = false
 					FocusElement._CursorVisible = false
 					FocusElement._SelectionDragging = false
-					ContactClearTextBoxSelection(FocusElement)
+					ClearTextBoxSelection(FocusElement)
 					FocusElement._HoveredSuggestionIndex = nil
 					FocusElement._KeyboardSuggestionIndex = nil
 					FocusElement._SuggestionDropdownRegion = nil
@@ -5437,7 +5435,7 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 		if Window._SearchTextBox then
 			Window._SearchTextBox._SelectionDragging = false
-			ContactClearTextBoxSelection(Window._SearchTextBox)
+			ClearTextBoxSelection(Window._SearchTextBox)
 		end
 		Window._ActiveTextSelectionBox = nil
 		Window:SetInputBlocking("Typing", false)
@@ -5449,12 +5447,12 @@ function Library:CreateWindow(WindowConfiguration)
 	local function GetTextBoxInputMetrics(TextBoxElement, TextBoxPosition, TextBoxWidth)
 		-- Mouse selection and rendering share the same geometry values so the
 		-- selected range lines up with the visible characters.
-		return ContactGetTextBoxLayoutMetrics(TextBoxElement, TextBoxPosition, TextBoxWidth)
+		return GetTextBoxLayoutMetrics(TextBoxElement, TextBoxPosition, TextBoxWidth)
 	end
 
 	local function BeginTextBoxMouseSelection(TextBoxElement, MousePosition, TextBoxPosition, TextBoxWidth)
 		local Metrics = GetTextBoxInputMetrics(TextBoxElement, TextBoxPosition, TextBoxWidth)
-		local CursorIndex = ContactGetTextBoxCharacterIndexFromMouseX(
+		local CursorIndex = GetTextBoxCharacterIndexFromMouseX(
 			TextBoxElement,
 			MousePosition.X,
 			Metrics.InputStartX,
@@ -5467,8 +5465,8 @@ function Library:CreateWindow(WindowConfiguration)
 		TextBoxElement._CursorBlinkTime = tick()
 		TextBoxElement._SelectionDragging = true
 		TextBoxElement._SelectionAnchorIndex = CursorIndex
-		ContactSetTextBoxCursorIndex(TextBoxElement, CursorIndex)
-		ContactClearTextBoxSelection(TextBoxElement)
+		SetTextBoxCursorIndex(TextBoxElement, CursorIndex)
+		ClearTextBoxSelection(TextBoxElement)
 		Window._ActiveTextSelectionBox = TextBoxElement
 		Window:SetInputBlocking("Typing", true)
 	end
@@ -5490,7 +5488,7 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		local Metrics = GetTextBoxInputMetrics(TextBoxElement, TextBoxPosition, TextBoxWidth)
-		local CursorIndex = ContactGetTextBoxCharacterIndexFromMouseX(
+		local CursorIndex = GetTextBoxCharacterIndexFromMouseX(
 			TextBoxElement,
 			MousePosition.X,
 			Metrics.InputStartX,
@@ -5498,7 +5496,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Metrics.MaximumCharacters
 		)
 
-		ContactSetTextBoxSelectionRange(TextBoxElement, TextBoxElement._SelectionAnchorIndex or CursorIndex, CursorIndex)
+		SetTextBoxSelectionRange(TextBoxElement, TextBoxElement._SelectionAnchorIndex or CursorIndex, CursorIndex)
 	end
 
 	local function SetSearchTextBoxFocus(IsFocused)
@@ -5510,7 +5508,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Window._SearchTextBox._CursorVisible = false
 			Window._SearchTextBox._CursorBlinkTime = 0
 			Window._SearchTextBox._SelectionDragging = false
-			ContactClearTextBoxSelection(Window._SearchTextBox)
+			ClearTextBoxSelection(Window._SearchTextBox)
 		end
 		Window:SetInputBlocking("Typing", Window._SearchTextBox._IsFocused)
 	end
@@ -5720,7 +5718,7 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._IsHovered = Element._IsSwatchHovered
 				elseif Element._Type == "TextBox" then
 					Element._HoveredSuggestionIndex = nil
-					local TextBoxMetrics = ContactGetTextBoxLayoutMetrics(Element, ElementRegionPosition, ElementWidth)
+					local TextBoxMetrics = GetTextBoxLayoutMetrics(Element, ElementRegionPosition, ElementWidth)
 					local TextBoxBaseRegionSize = Vector2.new(ElementWidth, TextBoxMetrics.BaseHeight)
 					if Element._IsFocused and Element._SuggestionDropdownRegion and IsPointInsideRectangle(CurrentMousePosition, Element._SuggestionDropdownRegion.Position, Element._SuggestionDropdownRegion.Size) then
 						local RelativeSuggestionY = CurrentMousePosition.Y - Element._SuggestionDropdownRegion.Position.Y
@@ -6581,7 +6579,7 @@ function Library:CreateWindow(WindowConfiguration)
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
 								-- Truncate text if it exceeds the button's bounds, keeping style consistent with PascalCase names.
 								local AvailableTextWidth = ElementSize.X - 20
-								local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+								local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 								local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
 								local DisplayText = TruncateTextWithAsciiEllipsis(Element._Text, MaximumCharacters)
 								DrawingImmediateText(
@@ -6623,7 +6621,7 @@ function Library:CreateWindow(WindowConfiguration)
 								DrawImmediateSolidCircle(Vector2.new(PipX, PipY), 5, PipColor, 1, 64)
 							end
 						elseif Element._Type == "TextBox" then
-							local TextBoxMetrics = ContactGetTextBoxLayoutMetrics(Element, ElementPosition, ElementSize.X)
+							local TextBoxMetrics = GetTextBoxLayoutMetrics(Element, ElementPosition, ElementSize.X)
 							local TextBoxBaseHeight = TextBoxMetrics.BaseHeight
 							local TextBoxBaseSize = Vector2.new(ElementSize.X, TextBoxBaseHeight)
 							if Element._IsFocused then
@@ -6676,9 +6674,9 @@ function Library:CreateWindow(WindowConfiguration)
 
 							local CharacterWidth = TextBoxMetrics.CharacterWidth
 							local MaxChars = TextBoxMetrics.MaximumCharacters
-							local ClippedText = ContactGetTextBoxVisibleText(Element, DisplayText, MaxChars, HasValue)
+							local ClippedText = GetTextBoxVisibleText(Element, DisplayText, MaxChars, HasValue)
 
-							ContactDrawImmediateTextBoxSelectionAndCursor(
+							DrawImmediateTextBoxSelectionAndCursor(
 								Element,
 								InputStartX,
 								TextBoxMetrics.InputTextPositionY,
@@ -6761,7 +6759,7 @@ function Library:CreateWindow(WindowConfiguration)
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
 								-- Truncate text if it exceeds the dropdown's bounds, keeping style consistent with PascalCase names.
 								local AvailableTextWidth = ElementSize.X - 32
-								local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+								local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 								local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
 								local FullText = string.format("%s: %s", Element._Text, Element._Value)
 								local DisplayText = TruncateTextWithAsciiEllipsis(FullText, MaximumCharacters)
@@ -6808,7 +6806,7 @@ function Library:CreateWindow(WindowConfiguration)
 										if ItemTextY >= ItemAllowedMinY and ItemTextY + Theme.ElementFontSize <= ItemAllowedMaxY then
 											-- Truncate item text if it exceeds the option area bounds.
 											local AvailableItemTextWidth = ItemSize.X - 24
-											local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+											local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 											local MaximumCharacters = math.max(1, math.floor(AvailableItemTextWidth / CharacterWidth))
 											local DisplayItemText = TruncateTextWithAsciiEllipsis(ItemData.Value, MaximumCharacters)
 											DrawingImmediateText(
@@ -6994,16 +6992,16 @@ function Library:CreateWindow(WindowConfiguration)
 				local SearchDisplayText = HasSearchValue and Window._SearchTextBox._Value or Window._SearchTextBox._Placeholder
 
 				local AvailableQueryWidth = SearchBarSize.X - 32
-				local CharacterWidth = ContactGetEditableTextCharacterWidth(Theme.ElementFontSize)
+				local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 				local MaxQueryChars = math.max(1, math.floor(AvailableQueryWidth / CharacterWidth))
-				SearchDisplayText = ContactGetTextBoxVisibleText(
+				SearchDisplayText = GetTextBoxVisibleText(
 					Window._SearchTextBox,
 					SearchDisplayText,
 					MaxQueryChars,
 					Window._SearchTextBox._Value ~= ""
 				)
 
-				ContactDrawImmediateTextBoxSelectionAndCursor(
+				DrawImmediateTextBoxSelectionAndCursor(
 					Window._SearchTextBox,
 					SearchBarPosition.X + 24,
 					SearchBarPosition.Y,
@@ -7213,7 +7211,7 @@ function Library:CreateWindow(WindowConfiguration)
 				}
 			end
 
-			local TooltipGeometry = ContactGetTooltipGeometry(Window, CurrentMousePosition)
+			local TooltipGeometry = GetTooltipGeometry(Window, CurrentMousePosition)
 			if TooltipGeometry then
 				DrawingImmediateFilledRectangle(TooltipGeometry.Position, TooltipGeometry.Size, Theme.TooltipBackground, 0.98, 0)
 				DrawingImmediateRectangle(TooltipGeometry.Position, TooltipGeometry.Size, Theme.TooltipBorder, 0.9, 0, 1)
@@ -7440,7 +7438,7 @@ function Library:SetInputBlocking(Type, Enabled)
 				TypingSink,
 				false,
 				Priority,
-				table.unpack(ContactTextEntryInputObjects)
+				table.unpack(TextEntryInputObjects)
 			)
 		end
 	end

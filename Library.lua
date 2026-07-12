@@ -239,7 +239,7 @@ end
 if not DrawingIsNative then
 	-- Placeholder link is intentionally isolated here so a real custom backend
 	-- can be dropped in without changing rendering code below.
-	local CustomDrawingLibraryLink = "https://raw.githubusercontent.com/placeholder-link-here/Drawing.lua"
+	local CustomDrawingLibraryLink = "https://raw.githubusercontent.com/contact-here/Contact/refs/heads/main/DrawingLibrary.lua"
 	local RawHttpGet = CloneFunction(DataModel.HttpGet)
 	local RawRequestFunction = request or http_request or (syn and syn.request)
 	local FetchedContent

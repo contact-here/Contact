@@ -279,20 +279,31 @@ if not DrawingIsNative then
 end
 local DrawingImmediateLine            = nil
 local DrawingImmediateCircle          = nil
+local DrawingImmediateFilledCircle    = nil
 local DrawingImmediateRectangle       = nil
 local DrawingImmediateFilledRectangle = nil
+local DrawingImmediateQuad            = nil
+local DrawingImmediateFilledQuad      = nil
 local DrawingImmediateText            = nil
+local DrawingImmediateOutlinedText    = nil
 local DrawingImmediateGetPaint        = nil
 
-if (SelectedBackend == 0 or SelectedBackend == 1) and typeof(DrawingImmediate) == "table" then
+-- Cache DrawingImmediate primitives whenever the executor exposes them, even
+-- when the main interface itself was forced to use retained Drawing. Feature
+-- pages can then select either backend independently through GetRenderingBackends.
+if typeof(DrawingImmediate) == "table" then
 	DrawingImmediateLine            = typeof(DrawingImmediate.Line)            == "function" and CloneFunction(DrawingImmediate.Line)
 	DrawingImmediateCircle          = typeof(DrawingImmediate.Circle)          == "function" and CloneFunction(DrawingImmediate.Circle)
+	DrawingImmediateFilledCircle    = typeof(DrawingImmediate.FilledCircle)    == "function" and CloneFunction(DrawingImmediate.FilledCircle)
 	DrawingImmediateRectangle       = typeof(DrawingImmediate.Rectangle)       == "function" and CloneFunction(DrawingImmediate.Rectangle)
 	DrawingImmediateFilledRectangle = typeof(DrawingImmediate.FilledRectangle) == "function" and CloneFunction(DrawingImmediate.FilledRectangle)
+	DrawingImmediateQuad            = typeof(DrawingImmediate.Quad)            == "function" and CloneFunction(DrawingImmediate.Quad)
+	DrawingImmediateFilledQuad      = typeof(DrawingImmediate.FilledQuad)      == "function" and CloneFunction(DrawingImmediate.FilledQuad)
 	DrawingImmediateText            = typeof(DrawingImmediate.Text)            == "function" and CloneFunction(DrawingImmediate.Text)
+	DrawingImmediateOutlinedText    = typeof(DrawingImmediate.OutlinedText)    == "function" and CloneFunction(DrawingImmediate.OutlinedText)
 	DrawingImmediateGetPaint        = typeof(DrawingImmediate.GetPaint)        == "function" and CloneFunction(DrawingImmediate.GetPaint)
 
-	if DrawingImmediateLine then
+	if (SelectedBackend == 0 or SelectedBackend == 1) and DrawingImmediateLine then
 		UseImmediateMode        = true
 		DrawingBackendAvailable = true
 	end
@@ -621,6 +632,66 @@ GetEditableTextCharacterWidth = function(FontSize)
 	-- clipping multiplier. Keeping this in one helper makes cursor, selection,
 	-- and mouse hit testing agree visually.
 	return FontSize * Theme.FontCharWidthRatio
+end
+
+-- Calculate variable tab widths from their complete titles. Short titles retain
+-- a compact minimum width, while descriptive titles receive enough horizontal
+-- space to remain readable. Any remaining width is shared evenly; narrow
+-- windows keep the existing horizontal tab scrolling behavior.
+GetPageTabLayout = function(Window, WindowWidth)
+	local TabCount = #Window._Pages
+	local TabBarPadding = 10
+	local TabGap = 6
+	local AvailableTabWidth = math.max(1, WindowWidth - TabBarPadding * 2)
+	local TabWidths = {}
+	local TabOffsets = {}
+	local TotalTabWidth = 0
+	local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
+
+	if TabCount == 0 then
+		return {
+			Padding = TabBarPadding,
+			Gap = TabGap,
+			Widths = TabWidths,
+			Offsets = TabOffsets,
+			ContentWidth = 0,
+			AvailableWidth = AvailableTabWidth,
+			MaximumScroll = 0,
+		}
+	end
+
+	for PageIndex, Page in ipairs(Window._Pages) do
+		local PreferredTabWidth = math.max(92, #tostring(Page.Title) * CharacterWidth + 28)
+		TabWidths[PageIndex] = PreferredTabWidth
+		TotalTabWidth = TotalTabWidth + PreferredTabWidth
+	end
+	TotalTabWidth = TotalTabWidth + TabGap * math.max(0, TabCount - 1)
+
+	if TotalTabWidth < AvailableTabWidth then
+		local SharedAdditionalWidth = (AvailableTabWidth - TotalTabWidth) / TabCount
+		TotalTabWidth = 0
+		for PageIndex = 1, TabCount do
+			TabWidths[PageIndex] = TabWidths[PageIndex] + SharedAdditionalWidth
+			TotalTabWidth = TotalTabWidth + TabWidths[PageIndex]
+		end
+		TotalTabWidth = TotalTabWidth + TabGap * math.max(0, TabCount - 1)
+	end
+
+	local CurrentTabOffset = 0
+	for PageIndex = 1, TabCount do
+		TabOffsets[PageIndex] = CurrentTabOffset
+		CurrentTabOffset = CurrentTabOffset + TabWidths[PageIndex] + TabGap
+	end
+
+	return {
+		Padding = TabBarPadding,
+		Gap = TabGap,
+		Widths = TabWidths,
+		Offsets = TabOffsets,
+		ContentWidth = TotalTabWidth,
+		AvailableWidth = AvailableTabWidth,
+		MaximumScroll = math.max(0, TotalTabWidth - AvailableTabWidth),
+	}
 end
 
 local AsciiEllipsis = string.char(46, 46, 46)
@@ -1546,13 +1617,13 @@ function Library:ProcessMouseWheel(Input)
 				local TabBarPosition = Window._Position + Vector2.new(0, Theme.TitleBarHeight)
 				local TabBarSize = Vector2.new(Theme.WindowWidth, Window._TabBarHeight)
 				if Window._TabBarHeight > 0 and IsPointInsideRectangle(CurrentMousePosition, TabBarPosition, TabBarSize) then
-					local TabCount = #Window._Pages
-					local TabBarPadding = 10
-					local TabGap = 6
-					local TabWidth = math.max(92, (Theme.WindowWidth - (TabBarPadding * 2) - (TabGap * (math.min(TabCount, 5) - 1))) / math.min(TabCount, 5))
-					local MaxTabScroll = math.max(0, (TabCount * (TabWidth + TabGap)) - TabGap - (Theme.WindowWidth - TabBarPadding * 2))
+					local TabLayout = GetPageTabLayout(Window, Theme.WindowWidth)
 					local Delta = Input.Position.Z * 30
-					Window._TabScrollOffset = math.clamp((Window._TabScrollOffset or 0) - Delta, 0, MaxTabScroll)
+					Window._TabScrollOffset = math.clamp(
+						(Window._TabScrollOffset or 0) - Delta,
+						0,
+						TabLayout.MaximumScroll
+					)
 					Window:RecalculateLayout()
 					return true
 				else
@@ -1841,6 +1912,65 @@ for OriginalFontName, FontIdentifier in pairs(DrawingFontIdentifiers) do
 	Library.Fonts[PublicFontName] = FontIdentifier
 end
 
+-- Expose the rendering implementations through one small adapter instead of
+-- making feature modules rediscover, download, and normalize the same Drawing
+-- libraries. The retained adapter includes the replacement Drawing library
+-- loaded above, so callers automatically receive the remote fallback whenever
+-- the executor does not provide a native Drawing.new implementation.
+function Library:GetRenderingBackends()
+	local RetainedDrawingAvailable = typeof(Drawing) == "table" and typeof(Drawing.new) == "function"
+	local ImmediateDrawingAvailable = DrawingImmediateGetPaint ~= nil
+		and (DrawingImmediateText ~= nil or DrawingImmediateOutlinedText ~= nil)
+
+	local function CreateRetainedDrawingObject(ObjectType)
+		if not RetainedDrawingAvailable then
+			return nil, "Drawing.new is unavailable"
+		end
+
+		local CreationSucceeded, DrawingObject = pcall(Drawing.new, ObjectType)
+		if not CreationSucceeded then
+			return nil, tostring(DrawingObject)
+		end
+		return DrawingObject, nil
+	end
+
+	local function DestroyRetainedDrawingObject(DrawingObject)
+		if not DrawingObject then
+			return
+		end
+
+		local MethodReadSucceeded, DestructionMethod = pcall(function()
+			return DrawingObject.Destroy or DrawingObject.Remove
+		end)
+		if MethodReadSucceeded and typeof(DestructionMethod) == "function" then
+			pcall(DestructionMethod, DrawingObject)
+		end
+	end
+
+	return {
+		DrawingImmediate = {
+			Available = ImmediateDrawingAvailable,
+			GetPaint = DrawingImmediateGetPaint,
+			Line = DrawingImmediateLine,
+			Circle = DrawingImmediateCircle,
+			FilledCircle = DrawingImmediateFilledCircle,
+			Rectangle = DrawingImmediateRectangle,
+			FilledRectangle = DrawingImmediateFilledRectangle,
+			Quad = DrawingImmediateQuad,
+			FilledQuad = DrawingImmediateFilledQuad,
+			Text = DrawingImmediateText,
+			OutlinedText = DrawingImmediateOutlinedText,
+		},
+		Drawing = {
+			Available = RetainedDrawingAvailable,
+			CreateObject = CreateRetainedDrawingObject,
+			SetProperty = SetRenderProperty,
+			GetProperty = GetRenderProperty,
+			DestroyObject = DestroyRetainedDrawingObject,
+		},
+	}
+end
+
 Library.ActiveNotifications = {}
 
 -- Destroy every connection, window, and global notification owned by the
@@ -1883,7 +2013,7 @@ local function TruncateNotificationText(Text)
 	if #Text <= MaxChars then
 		return Text
 	end
-	return string.sub(Text, 1, math.max(1, MaxChars - 3)) .. "..."
+	return string.format("%s...", string.sub(Text, 1, math.max(1, MaxChars - 3)))
 end
 
 -- Show a transient notification next to a window or at a fixed screen position.
@@ -3428,17 +3558,14 @@ function Library:CreateWindow(WindowConfiguration)
 					})
 				end
 
-				local TabCount = #Window._Pages
-				local TabBarPadding = 10
-				local TabGap = 6
-				local TabWidth = math.max(92, (Theme.WindowWidth - (TabBarPadding * 2) - (TabGap * (math.min(TabCount, 5) - 1))) / math.min(TabCount, 5))
-				local MaxTabScroll = math.max(0, (TabCount * (TabWidth + TabGap)) - TabGap - (Theme.WindowWidth - TabBarPadding * 2))
-				Window._TabScrollOffset = math.clamp(Window._TabScrollOffset or 0, 0, MaxTabScroll)
+				local TabLayout = GetPageTabLayout(Window, Theme.WindowWidth)
+				Window._TabScrollOffset = math.clamp(Window._TabScrollOffset or 0, 0, TabLayout.MaximumScroll)
 
 				for PageIndex, Page in ipairs(Window._Pages) do
 					local TabDrawings = Window._TabDrawings[PageIndex]
 					if TabDrawings then
-						local TabX = WindowPosition.X + TabBarPadding + (PageIndex - 1) * (TabWidth + TabGap) - Window._TabScrollOffset
+						local TabWidth = TabLayout.Widths[PageIndex]
+						local TabX = WindowPosition.X + TabLayout.Padding + TabLayout.Offsets[PageIndex] - Window._TabScrollOffset
 						local TabY = WindowPosition.Y + Theme.TitleBarHeight + 5
 						local TabHeight = Window._TabBarHeight - 10
 						
@@ -3497,11 +3624,15 @@ function Library:CreateWindow(WindowConfiguration)
 						end
 					end
 				end
-				if MaxTabScroll > 0 and Window._TabScrollbarDrawing then
-					local ScrollProgress = Window._TabScrollOffset / MaxTabScroll
-					local AvailableTabWidth = Theme.WindowWidth - TabBarPadding * 2
-					local HandleWidth = math.clamp((AvailableTabWidth / (TabCount * (TabWidth + TabGap))) * AvailableTabWidth, 30, AvailableTabWidth)
-					local HandleX = WindowPosition.X + TabBarPadding + (AvailableTabWidth - HandleWidth) * ScrollProgress
+				if TabLayout.MaximumScroll > 0 and Window._TabScrollbarDrawing then
+					local ScrollProgress = Window._TabScrollOffset / TabLayout.MaximumScroll
+					local AvailableTabWidth = TabLayout.AvailableWidth
+					local HandleWidth = math.clamp(
+						(AvailableTabWidth / TabLayout.ContentWidth) * AvailableTabWidth,
+						30,
+						AvailableTabWidth
+					)
+					local HandleX = WindowPosition.X + TabLayout.Padding + (AvailableTabWidth - HandleWidth) * ScrollProgress
 					local HandleY = WindowPosition.Y + Theme.TitleBarHeight + Window._TabBarHeight - 1.5
 
 					ApplyDrawingProperties(Window._TabScrollbarDrawing, {
@@ -4228,6 +4359,7 @@ function Library:CreateWindow(WindowConfiguration)
 			-- clicked for copy-style callbacks.
 			LabelConfiguration = LabelConfiguration or {}
 			LabelConfiguration.Text = LabelConfiguration.Text or "Label"
+			local HasExplicitCallback = typeof(LabelConfiguration.Callback) == "function"
 			LabelConfiguration.Callback = LabelConfiguration.Callback or function() end
 
 			local Element = {}
@@ -4235,6 +4367,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._Height = TextBlockHeight(1, Theme.ElementFontSize)
 			Element._Text = LabelConfiguration.Text
 			Element._Callback = LabelConfiguration.Callback
+			Element._Interactive = HasExplicitCallback
 			Element._PositionX = 0
 			Element._PositionY = 0
 			Element._Width = 0
@@ -4885,7 +5018,7 @@ function Library:CreateWindow(WindowConfiguration)
 				})
 			end
 
-			function Element:SetValue(NewValue)
+			function Element:SetValue(NewValue, SuppressCallback)
 				NewValue = SnapToIncrement(NewValue)
 				Element._Value = NewValue
 
@@ -4897,7 +5030,9 @@ function Library:CreateWindow(WindowConfiguration)
 					Window:RecalculateLayout()
 				end
 
-				InvokeCallback(Element._Callback, NewValue)
+				if not SuppressCallback then
+					InvokeCallback(Element._Callback, NewValue)
+				end
 			end
 
 			function Element:GetValue()
@@ -5642,14 +5777,12 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 		end
 
+		local TabLayout = GetPageTabLayout(Window, Theme.WindowWidth)
 		for PageIndex, Page in ipairs(Window._Pages) do
 			Page._IsHovered = false
 			if Window._TabBarHeight > 0 then
-				local TabCount = #Window._Pages
-				local TabBarPadding = 10
-				local TabGap = 6
-				local TabWidth = math.max(92, (Theme.WindowWidth - (TabBarPadding * 2) - (TabGap * (math.min(TabCount, 5) - 1))) / math.min(TabCount, 5))
-				local TabX = Window._Position.X + TabBarPadding + (PageIndex - 1) * (TabWidth + TabGap) - (Window._TabScrollOffset or 0)
+				local TabWidth = TabLayout.Widths[PageIndex]
+				local TabX = Window._Position.X + TabLayout.Padding + TabLayout.Offsets[PageIndex] - (Window._TabScrollOffset or 0)
 				local TabY = Window._Position.Y + Theme.TitleBarHeight + 5
 				Page._IsHovered = IsPointInsideRectangle(CurrentMousePosition, Vector2.new(TabX, TabY), Vector2.new(TabWidth, Window._TabBarHeight - 10))
 			end
@@ -5683,6 +5816,7 @@ function Library:CreateWindow(WindowConfiguration)
 			local SectionHeaderPosition = Vector2.new(Window._Position.X + Section._PositionX, SectionYPosition)
 			local SectionHeaderSize = Vector2.new(Section._Width, Theme.ElementHeight)
 			local ViewportStart, ViewportEnd = GetWindowContentViewportYRange(Window, Window._Position.Y)
+			local AllowedMinimumPositionY, AllowedMaximumPositionY = GetSectionAllowedYRange(Section, Window, Window._Position.Y)
 			local SectionVisible = (SectionYPosition + (Section._ContentHeight or 0) > ViewportStart)
 				and (SectionYPosition < ViewportEnd)
 			Section._IsHovered = SectionVisible and IsPointInsideRectangle(CurrentMousePosition, SectionHeaderPosition, SectionHeaderSize)
@@ -5693,14 +5827,35 @@ function Library:CreateWindow(WindowConfiguration)
 				local ElementWidth = Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
 				local ElementRegionSize = Vector2.new(ElementWidth, Element._Height)
 				local IsElementVisible = IsElementVisibleInViewport(ElementYPosition, Element._Height, Section, Window, Window._Position.Y)
-				local IsCurrentlyHovered = IsElementVisible and IsPointInsideRectangle(CurrentMousePosition, ElementRegionPosition, ElementRegionSize)
+				-- A tall element inside an independently scrolling section can remain
+				-- partially visible while most of its original rectangle sits beneath
+				-- another section. Hit testing must use the same clipped rectangle as
+				-- rendering; otherwise the invisible remainder steals clicks from the
+				-- controls drawn above it.
+				local ClippedElementRegionPosition, ClippedElementRegionSize = ClipRectangleToYRange(
+					ElementRegionPosition,
+					ElementRegionSize,
+					AllowedMinimumPositionY,
+					AllowedMaximumPositionY
+				)
+				local IsCurrentlyHovered = IsElementVisible
+					and ClippedElementRegionPosition ~= nil
+					and IsPointInsideRectangle(CurrentMousePosition, ClippedElementRegionPosition, ClippedElementRegionSize)
 
 				if Element._Type == "Slider" then
 					local TrackAbsolutePositionX = Window._Position.X + (Element._TrackPositionX or Element._PositionX)
 					local TrackAbsolutePositionY = ElementYPosition + Theme.ElementFontSize + 5
 					local TrackPos = Vector2.new(TrackAbsolutePositionX, TrackAbsolutePositionY)
 					local TrackSize = Vector2.new(Element._TrackTotalWidth or ElementWidth, 16)
-					Element._IsHovered = IsElementVisible and IsPointInsideRectangle(CurrentMousePosition, TrackPos, TrackSize)
+					local ClippedTrackPosition, ClippedTrackSize = ClipRectangleToYRange(
+						TrackPos,
+						TrackSize,
+						AllowedMinimumPositionY,
+						AllowedMaximumPositionY
+					)
+					Element._IsHovered = IsElementVisible
+						and ClippedTrackPosition ~= nil
+						and IsPointInsideRectangle(CurrentMousePosition, ClippedTrackPosition, ClippedTrackSize)
 
 					local Value = Element._Value or 0
 					local Range = (Element._MaxValue or 100) - (Element._MinValue or 0)
@@ -5709,17 +5864,35 @@ function Library:CreateWindow(WindowConfiguration)
 					local ThumbX = TrackAbsolutePositionX + math.floor((Element._TrackTotalWidth or Element._Width) * NormalizedValue)
 					local ThumbY = TrackAbsolutePositionY + 4
 					local ThumbHitSize = 14
-					Element._IsThumbHovered = IsElementVisible and math.abs(CurrentMousePosition.X - ThumbX) < ThumbHitSize and math.abs(CurrentMousePosition.Y - ThumbY) < ThumbHitSize
+					Element._IsThumbHovered = IsElementVisible
+						and ThumbY + ThumbHitSize > AllowedMinimumPositionY
+						and ThumbY - ThumbHitSize < AllowedMaximumPositionY
+						and math.abs(CurrentMousePosition.X - ThumbX) < ThumbHitSize
+						and math.abs(CurrentMousePosition.Y - ThumbY) < ThumbHitSize
 					Element._IsHovered = Element._IsHovered or Element._IsThumbHovered
 				elseif Element._Type == "ColorPicker" then
 					local SwatchAbsolutePosition = Window._Position + Vector2.new(Element._SwatchPositionX, Element._SwatchPositionY - Window._ScrollOffset)
 					local SwatchSizeVector = Vector2.new(Element._SwatchSize, Element._SwatchSize)
-					Element._IsSwatchHovered = IsElementVisible and IsPointInsideRectangle(CurrentMousePosition, SwatchAbsolutePosition, SwatchSizeVector)
+					local ClippedSwatchPosition, ClippedSwatchSize = ClipRectangleToYRange(
+						SwatchAbsolutePosition,
+						SwatchSizeVector,
+						AllowedMinimumPositionY,
+						AllowedMaximumPositionY
+					)
+					Element._IsSwatchHovered = IsElementVisible
+						and ClippedSwatchPosition ~= nil
+						and IsPointInsideRectangle(CurrentMousePosition, ClippedSwatchPosition, ClippedSwatchSize)
 					Element._IsHovered = Element._IsSwatchHovered
 				elseif Element._Type == "TextBox" then
 					Element._HoveredSuggestionIndex = nil
 					local TextBoxMetrics = GetTextBoxLayoutMetrics(Element, ElementRegionPosition, ElementWidth)
 					local TextBoxBaseRegionSize = Vector2.new(ElementWidth, TextBoxMetrics.BaseHeight)
+					local ClippedTextBoxPosition, ClippedTextBoxSize = ClipRectangleToYRange(
+						ElementRegionPosition,
+						TextBoxBaseRegionSize,
+						AllowedMinimumPositionY,
+						AllowedMaximumPositionY
+					)
 					if Element._IsFocused and Element._SuggestionDropdownRegion and IsPointInsideRectangle(CurrentMousePosition, Element._SuggestionDropdownRegion.Position, Element._SuggestionDropdownRegion.Size) then
 						local RelativeSuggestionY = CurrentMousePosition.Y - Element._SuggestionDropdownRegion.Position.Y
 						local SuggestionIndex = math.floor(RelativeSuggestionY / 22) + 1
@@ -5727,10 +5900,14 @@ function Library:CreateWindow(WindowConfiguration)
 							Element._HoveredSuggestionIndex = SuggestionIndex
 							Element._IsHovered = true
 						else
-							Element._IsHovered = IsElementVisible and IsPointInsideRectangle(CurrentMousePosition, ElementRegionPosition, TextBoxBaseRegionSize)
+							Element._IsHovered = IsElementVisible
+								and ClippedTextBoxPosition ~= nil
+								and IsPointInsideRectangle(CurrentMousePosition, ClippedTextBoxPosition, ClippedTextBoxSize)
 						end
 					else
-						Element._IsHovered = IsElementVisible and IsPointInsideRectangle(CurrentMousePosition, ElementRegionPosition, TextBoxBaseRegionSize)
+						Element._IsHovered = IsElementVisible
+							and ClippedTextBoxPosition ~= nil
+							and IsPointInsideRectangle(CurrentMousePosition, ClippedTextBoxPosition, ClippedTextBoxSize)
 					end
 				else
 					Element._IsHovered = IsCurrentlyHovered
@@ -6171,9 +6348,11 @@ function Library:CreateWindow(WindowConfiguration)
 							return
 
 						elseif Element._Type == "TextLabel" then
-							ClearFocusedTextBoxes()
-							InvokeCallback(Element._Callback)
-							return
+							if Element._Interactive then
+								ClearFocusedTextBoxes()
+								InvokeCallback(Element._Callback)
+								return
+							end
 
 						elseif Element._Type == "Toggle" then
 							ClearFocusedTextBoxes()
@@ -6325,14 +6504,11 @@ function Library:CreateWindow(WindowConfiguration)
 					1
 				)
 
-				local TabCount = #Window._Pages
-				local TabBarPadding = 10
-				local TabGap = 6
-				local TabWidth = math.max(92, (WindowWidth - (TabBarPadding * 2) - (TabGap * (math.min(TabCount, 5) - 1))) / math.min(TabCount, 5))
-				local MaxTabScroll = math.max(0, (TabCount * (TabWidth + TabGap)) - TabGap - (WindowWidth - TabBarPadding * 2))
-				Window._TabScrollOffset = math.clamp(Window._TabScrollOffset or 0, 0, MaxTabScroll)
+				local TabLayout = GetPageTabLayout(Window, WindowWidth)
+				Window._TabScrollOffset = math.clamp(Window._TabScrollOffset or 0, 0, TabLayout.MaximumScroll)
 				for PageIndex, Page in ipairs(Window._Pages) do
-					local TabX = WindowPosition.X + TabBarPadding + (PageIndex - 1) * (TabWidth + TabGap) - Window._TabScrollOffset
+					local TabWidth = TabLayout.Widths[PageIndex]
+					local TabX = WindowPosition.X + TabLayout.Padding + TabLayout.Offsets[PageIndex] - Window._TabScrollOffset
 					local TabY = WindowPosition.Y + Theme.TitleBarHeight + 5
 					local TabHeight = Window._TabBarHeight - 10
 					
@@ -6373,11 +6549,15 @@ function Library:CreateWindow(WindowConfiguration)
 						end
 					end
 				end
-				if MaxTabScroll > 0 then
-					local ScrollProgress = Window._TabScrollOffset / MaxTabScroll
-					local AvailableTabWidth = WindowWidth - TabBarPadding * 2
-					local HandleWidth = math.clamp((AvailableTabWidth / (TabCount * (TabWidth + TabGap))) * AvailableTabWidth, 30, AvailableTabWidth)
-					local HandleX = WindowPosition.X + TabBarPadding + (AvailableTabWidth - HandleWidth) * ScrollProgress
+				if TabLayout.MaximumScroll > 0 then
+					local ScrollProgress = Window._TabScrollOffset / TabLayout.MaximumScroll
+					local AvailableTabWidth = TabLayout.AvailableWidth
+					local HandleWidth = math.clamp(
+						(AvailableTabWidth / TabLayout.ContentWidth) * AvailableTabWidth,
+						30,
+						AvailableTabWidth
+					)
+					local HandleX = WindowPosition.X + TabLayout.Padding + (AvailableTabWidth - HandleWidth) * ScrollProgress
 					local HandleY = WindowPosition.Y + Theme.TitleBarHeight + Window._TabBarHeight - 1.5
 
 					DrawingImmediateLine(

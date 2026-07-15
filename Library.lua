@@ -1649,6 +1649,18 @@ Library.Connections = {}
 
 Library.Theme = Theme
 
+function Library:IsPageTabFullyInsideViewport(TabLayout, WindowPositionX, WindowWidth, TabPositionX, TabWidth)
+	-- Drawing backends do not provide a reliable clipping rectangle. A partially
+	-- visible tab would therefore paint its background and title beyond the window
+	-- border. Use the same strict viewport test for drawing and pointer hit testing
+	-- so an off-screen tab is neither rendered nor accidentally interactive.
+	local TabViewportLeft = WindowPositionX + TabLayout.Padding
+	local TabViewportRight = WindowPositionX + WindowWidth - TabLayout.Padding
+	local FloatingPointTolerance = 0.5
+	return TabPositionX >= TabViewportLeft - FloatingPointTolerance
+		and TabPositionX + TabWidth <= TabViewportRight + FloatingPointTolerance
+end
+
 -- A touch-capable desktop can expose TouchEnabled even when the interface is
 -- primarily operated with a mouse. DeviceType is therefore the authoritative
 -- phone/tablet signal, while the viewport check covers executors that report an
@@ -2272,8 +2284,6 @@ function Library:CreateWindow(WindowConfiguration)
 
 	local CreateTrackedDrawingObject, CreateRectangleDrawing, CreateTextDrawing = MakeDrawingFactory(WindowTrackedDrawings)
 
-	local DetectedDeviceType = GetDeviceType(UserInputService)
-	local IsPhoneDevice = DetectedDeviceType == Enum.DeviceType.Phone
 	local TouchInputAvailable = Library:IsTouchInputAvailable()
 
 	if TouchInputAvailable then
@@ -2285,17 +2295,17 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Touch controls need a larger unscaled target than desktop controls. The
 		-- viewport pass below performs the final proportional scaling and clamps
 		-- the complete window to the currently visible phone or tablet area.
-		MobileTheme.TitleFontSize = 22
-		MobileTheme.SectionFontSize = 17
-		MobileTheme.ElementFontSize = 16
-		MobileTheme.WindowWidth = 720
-		MobileTheme.WindowVisibleHeight = 680
-		MobileTheme.ElementHeight = 46
-		MobileTheme.TitleBarHeight = 54
-		MobileTheme.ElementPadding = 10
-		MobileTheme.SectionPadding = 12
-		MobileTheme.InnerMargin = 14
-		MobileTheme.ScrollbarWidth = 9
+		MobileTheme.TitleFontSize = 19
+		MobileTheme.SectionFontSize = 15
+		MobileTheme.ElementFontSize = 14
+		MobileTheme.WindowWidth = 640
+		MobileTheme.WindowVisibleHeight = 560
+		MobileTheme.ElementHeight = 40
+		MobileTheme.TitleBarHeight = 48
+		MobileTheme.ElementPadding = 8
+		MobileTheme.SectionPadding = 10
+		MobileTheme.InnerMargin = 12
+		MobileTheme.ScrollbarWidth = 8
 		MobileTheme.Base = nil
 		Theme = MobileTheme
 		Library.Theme = Theme
@@ -2332,9 +2342,12 @@ function Library:CreateWindow(WindowConfiguration)
 	Window._Destroyed = false
 	Window._Destroying = false
 	Window._TouchInputAvailable = TouchInputAvailable
-	Window._IsPhoneDevice = IsPhoneDevice
-	Window._DeviceProfile = TouchInputAvailable and "Touch" or "Desktop"
+	-- The versioned profile intentionally invalidates geometry saved by the older
+	-- oversized touch layout. ApplyTouchViewportGeometry replaces this temporary
+	-- value with its orientation-specific profile before configuration is restored.
+	Window._DeviceProfile = TouchInputAvailable and "Responsive touch pending version 2" or "Desktop"
 	Window._UseSingleColumnLayout = false
+	Window._TouchLayoutWasPortrait = nil
 	Window._ViewportScaleInitialized = false
 	Window._CurrentViewportScale = 1
 	Window._HasAppliedDeviceGeometry = false
@@ -2713,10 +2726,20 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
-		if ShouldResetResponsiveBase and Window._InitialResponsiveBaseGeometry then
+		local ViewportMargin = 16
+		local PortraitLayout = ViewportSize.Y > ViewportSize.X
+		local TouchOrientationChanged = Window._TouchLayoutWasPortrait ~= nil
+			and Window._TouchLayoutWasPortrait ~= PortraitLayout
+		Window._TouchLayoutWasPortrait = PortraitLayout
+		Window._UseSingleColumnLayout = PortraitLayout or ViewportSize.X <= 760
+		Window._DeviceProfile = PortraitLayout
+			and "Responsive touch portrait version 2"
+			or "Responsive touch landscape version 2"
+
+		if (ShouldResetResponsiveBase or TouchOrientationChanged) and Window._InitialResponsiveBaseGeometry then
 			-- Restore the original touch dimensions before recomputing the responsive
-			-- profile. This gives configuration reset a real size reset even after a
-			-- user has manually resized the window and persisted that geometry.
+			-- profile. This gives configuration reset and orientation changes a real
+			-- size reset even after a user persisted geometry for another layout.
 			Theme.Base.WindowWidth = Window._InitialResponsiveBaseGeometry.WindowWidth
 			Theme.Base.WindowVisibleHeight = Window._InitialResponsiveBaseGeometry.WindowVisibleHeight
 			Theme.WindowWidth = Theme.Base.WindowWidth * ViewportScale
@@ -2724,33 +2747,43 @@ function Library:CreateWindow(WindowConfiguration)
 			Window._HasAppliedDeviceGeometry = false
 		end
 
-		local ViewportMargin = 10
 		local MaximumWindowWidth = math.max(180, ViewportSize.X - ViewportMargin * 2)
-		local PortraitLayout = ViewportSize.Y > ViewportSize.X
-		Window._UseSingleColumnLayout = PortraitLayout or ViewportSize.X <= 760
-
-		if not Window._HasAppliedDeviceGeometry then
-			local PreferredWidthFraction = Window._UseSingleColumnLayout and 0.94
-				or (Window._IsPhoneDevice and 0.72 or 0.84)
-			local MaximumPreferredWidth = Window._IsPhoneDevice and 980 or 1120
-			Theme.WindowWidth = math.min(
-				MaximumWindowWidth,
-				MaximumPreferredWidth,
-				math.max(Theme.WindowWidth, ViewportSize.X * PreferredWidthFraction)
-			)
-
-			local MaximumPreferredBodyHeight = Window._IsPhoneDevice and 720 or 840
-			local PreferredBodyHeight = math.min(
-				MaximumPreferredBodyHeight,
-				ViewportSize.Y * (Window._UseSingleColumnLayout and 0.72 or 0.74)
-			)
-			Theme.WindowVisibleHeight = math.max(Theme.WindowVisibleHeight, PreferredBodyHeight)
-		end
-
 		local MaximumVisibleBodyHeight = math.max(
 			180,
 			ViewportSize.Y - Theme.TitleBarHeight - ViewportMargin * 2
 		)
+
+		if not Window._HasAppliedDeviceGeometry then
+			-- Landscape touch screens benefit from a compact centered tool window so
+			-- Roblox controls remain reachable around it. Portrait screens receive a
+			-- wider single-column surface while still preserving outside margins.
+			local PreferredWidthFraction = PortraitLayout and 0.92 or 0.66
+			local MaximumPreferredWidth = PortraitLayout and 820 or 880
+			local MinimumPreferredWidth = math.min(PortraitLayout and 320 or 520, MaximumWindowWidth)
+			local PreferredWindowWidth = math.min(
+				MaximumPreferredWidth,
+				ViewportSize.X * PreferredWidthFraction
+			)
+			Theme.WindowWidth = math.clamp(
+				PreferredWindowWidth,
+				MinimumPreferredWidth,
+				MaximumWindowWidth
+			)
+
+			local PreferredBodyHeightFraction = PortraitLayout and 0.68 or 0.60
+			local MaximumPreferredBodyHeight = PortraitLayout and 760 or 580
+			local MinimumPreferredBodyHeight = math.min(PortraitLayout and 320 or 260, MaximumVisibleBodyHeight)
+			local PreferredBodyHeight = math.min(
+				MaximumPreferredBodyHeight,
+				ViewportSize.Y * PreferredBodyHeightFraction
+			)
+			Theme.WindowVisibleHeight = math.clamp(
+				PreferredBodyHeight,
+				MinimumPreferredBodyHeight,
+				MaximumVisibleBodyHeight
+			)
+		end
+
 		Theme.WindowWidth = math.clamp(
 			Theme.WindowWidth,
 			math.min(300, MaximumWindowWidth),
@@ -3867,10 +3900,13 @@ function Library:CreateWindow(WindowConfiguration)
 						local TabY = WindowPosition.Y + Theme.TitleBarHeight + 5
 						local TabHeight = Window._TabBarHeight - 10
 						
-						local TabVisible = Window._Visible
-						if TabX < WindowPosition.X - TabWidth or TabX > WindowPosition.X + Theme.WindowWidth then
-							TabVisible = false
-						end
+						local TabVisible = Window._Visible and Library:IsPageTabFullyInsideViewport(
+							TabLayout,
+							WindowPosition.X,
+							Theme.WindowWidth,
+							TabX,
+							TabWidth
+						)
 
 						local TextSize = GetTextBounds(Page.Title, Theme.ElementFontSize)
 						local TextX = TabX + (TabWidth - TextSize.X) / 2
@@ -3963,7 +3999,14 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 
-			ApplyDrawingProperties(TitleBarBackgroundDrawing, { Position = WindowPosition, Color = Theme.TitleBarBackground })
+			-- Responsive resizing must update the retained title rectangles as well as
+			-- the body. Leaving their construction-time width untouched made the title
+			-- bar and the final tab visibly protrude after a mobile geometry change.
+			ApplyDrawingProperties(TitleBarBackgroundDrawing, {
+				Position = WindowPosition,
+				Size = Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight),
+				Color = Theme.TitleBarBackground,
+			})
 			ApplyDrawingProperties(TitleBarHighlightDrawing, {
 				Position = WindowPosition,
 				Size = Vector2.new(Theme.WindowWidth, math.max(6, Theme.TitleBarHeight * 0.45)),
@@ -3976,7 +4019,11 @@ function Library:CreateWindow(WindowConfiguration)
 				Color = Theme.TitleBarAccentWash,
 				Visible = Window._Visible,
 			})
-			ApplyDrawingProperties(TitleBarBorderDrawing, { Position = WindowPosition, Color = Theme.WindowBorder })
+			ApplyDrawingProperties(TitleBarBorderDrawing, {
+				Position = WindowPosition,
+				Size = Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight),
+				Color = Theme.WindowBorder,
+			})
 
 			if TitleBarTextDrawing then
 				SetRenderProperty(TitleBarTextDrawing, "Size", Theme.TitleFontSize)
@@ -4011,16 +4058,17 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			if Window._ResizeGripLines then
-				local ResizeGripBasePosition = Vector2.new(
-					WindowPosition.X + Theme.WindowWidth - 18,
-					WindowPosition.Y + Theme.TitleBarHeight + Window._VisibleHeight - 18
+				local ResizeGripCornerInset = 5
+				local ResizeGripCornerPosition = Vector2.new(
+					WindowPosition.X + Theme.WindowWidth - ResizeGripCornerInset,
+					WindowPosition.Y + Theme.TitleBarHeight + Window._VisibleHeight - ResizeGripCornerInset
 				)
 				local ResizeGripColor = Window._ResizeGripHovered and Theme.TitleBarTextHover or Theme.TitleBarSeparator
 				for ResizeGripLineIndex, ResizeGripLineObject in ipairs(Window._ResizeGripLines) do
 					local ResizeGripOffset = ResizeGripLineIndex * 4
 					ApplyDrawingProperties(ResizeGripLineObject, {
-						From = ResizeGripBasePosition + Vector2.new(18 - ResizeGripOffset, 18),
-						To = ResizeGripBasePosition + Vector2.new(18, 18 - ResizeGripOffset),
+						From = ResizeGripCornerPosition - Vector2.new(ResizeGripOffset, 0),
+						To = ResizeGripCornerPosition - Vector2.new(0, ResizeGripOffset),
 						Color = ResizeGripColor,
 						Transparency = Window._ResizeGripHovered and 0.9 or 0.42,
 						Visible = Window._Visible,
@@ -6294,7 +6342,18 @@ function Library:CreateWindow(WindowConfiguration)
 				local TabWidth = TabLayout.Widths[PageIndex]
 				local TabX = Window._Position.X + TabLayout.Padding + TabLayout.Offsets[PageIndex] - (Window._TabScrollOffset or 0)
 				local TabY = Window._Position.Y + Theme.TitleBarHeight + 5
-				Page._IsHovered = IsPointInsideRectangle(CurrentMousePosition, Vector2.new(TabX, TabY), Vector2.new(TabWidth, Window._TabBarHeight - 10))
+				local TabIsFullyVisible = Library:IsPageTabFullyInsideViewport(
+					TabLayout,
+					Window._Position.X,
+					Theme.WindowWidth,
+					TabX,
+					TabWidth
+				)
+				Page._IsHovered = TabIsFullyVisible and IsPointInsideRectangle(
+					CurrentMousePosition,
+					Vector2.new(TabX, TabY),
+					Vector2.new(TabWidth, Window._TabBarHeight - 10)
+				)
 			end
 		end
 
@@ -7077,7 +7136,13 @@ function Library:CreateWindow(WindowConfiguration)
 					local TabY = WindowPosition.Y + Theme.TitleBarHeight + 5
 					local TabHeight = Window._TabBarHeight - 10
 					
-					if TabX >= WindowPosition.X - 10 and TabX + TabWidth <= WindowPosition.X + WindowWidth + 10 then
+					if Library:IsPageTabFullyInsideViewport(
+						TabLayout,
+						WindowPosition.X,
+						WindowWidth,
+						TabX,
+						TabWidth
+					) then
 						local TextSize = GetTextBounds(Page.Title, Theme.ElementFontSize)
 						local TextX = TabX + (TabWidth - TextSize.X) / 2
 						local TextY = TabY + (TabHeight - TextSize.Y) / 2
@@ -7698,16 +7763,17 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 			end
 
-			local ResizeGripBasePosition = Vector2.new(
-				WindowPosition.X + WindowWidth - 18,
-				WindowPosition.Y + Theme.TitleBarHeight + ContentHeight - 18
+			local ResizeGripCornerInset = 5
+			local ResizeGripCornerPosition = Vector2.new(
+				WindowPosition.X + WindowWidth - ResizeGripCornerInset,
+				WindowPosition.Y + Theme.TitleBarHeight + ContentHeight - ResizeGripCornerInset
 			)
 			local ResizeGripColor = Window._ResizeGripHovered and Theme.TitleBarTextHover or Theme.TitleBarSeparator
 			for ResizeGripLineIndex = 1, 3 do
 				local ResizeGripOffset = ResizeGripLineIndex * 4
 				DrawingImmediateLine(
-					ResizeGripBasePosition + Vector2.new(18 - ResizeGripOffset, 18),
-					ResizeGripBasePosition + Vector2.new(18, 18 - ResizeGripOffset),
+					ResizeGripCornerPosition - Vector2.new(ResizeGripOffset, 0),
+					ResizeGripCornerPosition - Vector2.new(0, ResizeGripOffset),
 					ResizeGripColor,
 					Window._ResizeGripHovered and 0.9 or 0.42,
 					1.35

@@ -114,9 +114,19 @@ do
 end
 
 local UserInputService, RunService, ContextActionService, Workspace
-local Drawing = Drawing
+local DrawingLibrary = Drawing
 local DataModel = CloneReference(game)
 local GetService = CloneFunction(DataModel.GetService)
+local IsDataModelLoaded = CloneFunction(DataModel.IsLoaded)
+local DataModelLoadedSignal = DataModel.Loaded
+local WaitForDataModelLoaded = CloneFunction(DataModelLoadedSignal.Wait)
+
+-- Roblox exposes a one-shot Loaded signal specifically for initialization.
+-- Check IsLoaded first because waiting after the signal has already fired would
+-- suspend the current thread permanently.
+if not IsDataModelLoaded(DataModel) then
+	WaitForDataModelLoaded(DataModelLoadedSignal)
+end
 
 do
 	-- Cache services through cloned methods/references so the rest of the
@@ -169,7 +179,7 @@ do
 	WindowFocusedConnect       = CloneFunction(UserInputService.WindowFocused.Connect)
 end
 
-local SetRenderProperty, GetRenderProperty, IsRenderObject, ClearDrawCache
+local SetRenderProperty, GetRenderProperty
 
 do
 	-- Some Drawing implementations expose setrenderproperty/getrenderproperty;
@@ -209,15 +219,6 @@ do
 		return nil
 	end
 
-	-- Optional backend maintenance hooks. Missing support should never block
-	-- User Interface rendering, so each one has a no operation fallback.
-	IsRenderObject = typeof(isrenderobj) == "function"
-		and CloneFunction(isrenderobj) or function()
-		return false
-	end
-
-	ClearDrawCache = typeof(cleardrawcache) == "function"
-		and CloneFunction(cleardrawcache) or function() end
 end
 
 local SelectedBackend = 0
@@ -229,8 +230,8 @@ local DrawingIsNative = false
 
 -- Native Drawing.new is preferred. When it is absent or Lua-backed, the library
 -- attempts to load a replacement Drawing implementation before falling back.
-if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
-	local NativeCheckSuccess, NativeCheckSource = pcall(debug.info, Drawing.new, "s")
+if typeof(DrawingLibrary) == "table" and typeof(DrawingLibrary.new) == "function" then
+	local NativeCheckSuccess, NativeCheckSource = pcall(debug.info, DrawingLibrary.new, "s")
 	if NativeCheckSuccess and NativeCheckSource == "[C]" then
 		DrawingIsNative = true
 	end
@@ -267,12 +268,10 @@ if not DrawingIsNative then
 		if LoadedFunction then
 			local ExecutionSuccess, ExecutionResult = pcall(LoadedFunction)
 			if ExecutionSuccess and typeof(ExecutionResult) == "table" and typeof(ExecutionResult.new) == "function" then
-				Drawing = ExecutionResult
+				DrawingLibrary = ExecutionResult
 
 				SetRenderProperty = ExecutionResult.SetRenderProperty
 				GetRenderProperty = ExecutionResult.GetRenderProperty
-				IsRenderObject    = ExecutionResult.IsRenderObject
-				ClearDrawCache    = ExecutionResult.ClearDrawingCache or ExecutionResult.ClearDrawCache
 			end
 		end
 	end
@@ -309,16 +308,19 @@ if typeof(DrawingImmediate) == "table" then
 	end
 end
 
--- Render a solid circular marker without relying on FilledCircle argument order,
--- which differs between several DrawingImmediate executor builds. A maximally
--- rounded square supplies the fill and Circle supplies a crisp circular edge.
--- No triangle primitive participates in toggle, slider, title, or inline markers.
+-- Render a solid circular marker through the documented Potassium signature:
+-- center, radius, color, number of sides, and opacity. The rounded-rectangle
+-- fallback is retained only for DrawingImmediate implementations that expose an
+-- outline circle without FilledCircle. No triangle primitive participates in
+-- toggle, slider, title, or inline markers.
 local function DrawImmediateSolidCircle(Center, Radius, Color, Opacity, NumberOfSides)
 	local SafeRadius = math.max(1, tonumber(Radius) or 1)
 	local SafeOpacity = tonumber(Opacity) or 1
 	local SafeNumberOfSides = math.max(16, math.floor(tonumber(NumberOfSides) or 64))
 
-	if DrawingImmediateFilledRectangle then
+	if DrawingImmediateFilledCircle then
+		DrawingImmediateFilledCircle(Center, SafeRadius, Color, SafeNumberOfSides, SafeOpacity)
+	elseif DrawingImmediateFilledRectangle then
 		local Diameter = SafeRadius * 2
 		DrawingImmediateFilledRectangle(
 			Center - Vector2.new(SafeRadius, SafeRadius),
@@ -330,13 +332,13 @@ local function DrawImmediateSolidCircle(Center, Radius, Color, Opacity, NumberOf
 	end
 
 	if DrawingImmediateCircle then
-		local OutlineThickness = DrawingImmediateFilledRectangle and 1 or SafeRadius
+		local OutlineThickness = (DrawingImmediateFilledCircle or DrawingImmediateFilledRectangle) and 1 or SafeRadius
 		DrawingImmediateCircle(Center, SafeRadius, Color, SafeOpacity, SafeNumberOfSides, OutlineThickness)
 	end
 end
 
 if not DrawingBackendAvailable then
-	if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
+	if typeof(DrawingLibrary) == "table" and typeof(DrawingLibrary.new) == "function" then
 		UseImmediateMode        = false
 		DrawingBackendAvailable = true
 	end
@@ -398,6 +400,8 @@ local function RandomString(CharacterCount)
 
 	return table.concat(ResultCharacters)
 end
+
+local Theme
 
 -- Lightweight word wrapping for Drawing text. Drawing has no automatic layout
 -- boxes, so line length is estimated from font size and theme character ratio.
@@ -464,56 +468,57 @@ end
 
 -- Visual design tokens. Color and size values are centralized so the launcher
 -- can expose them through the theme editor without touching rendering logic.
-local Theme = {
+Theme = {
 
-	-- Deep neutral base with layered surface colors. The interface uses calm
-	-- graphite, teal, and warm text instead of the flat neon look common in
-	-- throwaway script panels.
-	WindowBackground       = Color3.fromRGB(9, 12, 16),
-	WindowSurfaceHighlight = Color3.fromRGB(18, 24, 30),
-	WindowSurfaceShade     = Color3.fromRGB(5, 7, 10),
-	WindowBorder           = Color3.fromRGB(52, 64, 76),
-	WindowBorderHover      = Color3.fromRGB(112, 158, 176),
+	-- The commercial theme is built from neutral graphite surfaces, a restrained
+	-- mint accent, cool blue selection feedback, and warm destructive actions.
+	-- This gives every state a distinct purpose without turning the complete
+	-- interface into a single-hue terminal panel.
+	WindowBackground       = Color3.fromRGB(12, 16, 21),
+	WindowSurfaceHighlight = Color3.fromRGB(24, 31, 39),
+	WindowSurfaceShade     = Color3.fromRGB(7, 10, 14),
+	WindowBorder           = Color3.fromRGB(56, 70, 82),
+	WindowBorderHover      = Color3.fromRGB(104, 157, 178),
 
 	-- The title bar gets a cooler tint than the body to make dragging and
 	-- window ownership visually obvious.
-	TitleBarBackground     = Color3.fromRGB(12, 18, 23),
-	TitleBarBackgroundHover= Color3.fromRGB(19, 29, 36),
-	TitleBarHighlight      = Color3.fromRGB(31, 45, 54),
-	TitleBarAccentWash     = Color3.fromRGB(14, 42, 46),
-	TitleBarSeparator      = Color3.fromRGB(98, 211, 190),
-	TitleBarText           = Color3.fromRGB(239, 245, 242),
+	TitleBarBackground     = Color3.fromRGB(16, 22, 29),
+	TitleBarBackgroundHover= Color3.fromRGB(23, 32, 40),
+	TitleBarHighlight      = Color3.fromRGB(38, 50, 61),
+	TitleBarAccentWash     = Color3.fromRGB(21, 52, 54),
+	TitleBarSeparator      = Color3.fromRGB(89, 211, 184),
+	TitleBarText           = Color3.fromRGB(242, 247, 246),
 	TitleBarTextHover      = Color3.fromRGB(255, 255, 255),
 
 	-- Sections are slightly warmer than the window background, giving stacked
 	-- groups enough depth without relying on heavy borders.
-	SectionBodyBackground  = Color3.fromRGB(12, 15, 19),
-	SectionBackground      = Color3.fromRGB(18, 23, 28),
-	SectionBackgroundHover = Color3.fromRGB(27, 35, 42),
-	SectionText            = Color3.fromRGB(143, 224, 207),
-	SectionTextHover       = Color3.fromRGB(214, 245, 236),
+	SectionBodyBackground  = Color3.fromRGB(15, 19, 24),
+	SectionBackground      = Color3.fromRGB(22, 28, 35),
+	SectionBackgroundHover = Color3.fromRGB(31, 40, 49),
+	SectionText            = Color3.fromRGB(215, 229, 230),
+	SectionTextHover       = Color3.fromRGB(247, 251, 250),
 
-	LabelText      = Color3.fromRGB(202, 210, 214),
+	LabelText      = Color3.fromRGB(204, 214, 219),
 	LabelTextHover = Color3.fromRGB(241, 247, 245),
 
-	ButtonBackground      = Color3.fromRGB(22, 29, 35),
-	ButtonBackgroundHover = Color3.fromRGB(33, 45, 53),
+	ButtonBackground      = Color3.fromRGB(25, 33, 41),
+	ButtonBackgroundHover = Color3.fromRGB(37, 49, 60),
 	ButtonText            = Color3.fromRGB(236, 242, 239),
-	ButtonBorder          = Color3.fromRGB(65, 80, 88),
-	TabBackground         = Color3.fromRGB(16, 22, 27),
-	TabBackgroundHover    = Color3.fromRGB(25, 35, 42),
-	TabBackgroundActive   = Color3.fromRGB(31, 50, 54),
+	ButtonBorder          = Color3.fromRGB(66, 82, 94),
+	TabBackground         = Color3.fromRGB(19, 25, 32),
+	TabBackgroundHover    = Color3.fromRGB(29, 39, 48),
+	TabBackgroundActive   = Color3.fromRGB(31, 57, 58),
 	ToggleInactive        = Color3.fromRGB(67, 73, 79),
-	ToggleActive          = Color3.fromRGB(98, 211, 145),
+	ToggleActive          = Color3.fromRGB(90, 215, 157),
 
-	TextBoxBackground      = Color3.fromRGB(13, 17, 21),
-	TextBoxBackgroundHover = Color3.fromRGB(21, 27, 33),
+	TextBoxBackground      = Color3.fromRGB(16, 21, 27),
+	TextBoxBackgroundHover = Color3.fromRGB(24, 32, 40),
 	TextBoxBorder          = Color3.fromRGB(55, 70, 78),
-	TextBoxBorderFocused   = Color3.fromRGB(98, 211, 190),
+	TextBoxBorderFocused   = Color3.fromRGB(89, 211, 184),
 	TextBoxText            = Color3.fromRGB(226, 234, 232),
 	TextBoxPlaceholder     = Color3.fromRGB(116, 128, 132),
 	TextBoxCursor          = Color3.fromRGB(143, 224, 207),
-	TextBoxSelection       = Color3.fromRGB(58, 120, 132),
+	TextBoxSelection       = Color3.fromRGB(65, 116, 171),
 
 	DropdownBackground    = Color3.fromRGB(16, 22, 27),
 	DropdownHover         = Color3.fromRGB(25, 35, 42),
@@ -525,7 +530,7 @@ local Theme = {
 	DropdownArrow         = Color3.fromRGB(154, 180, 181),
 
 	SliderTrackBackground = Color3.fromRGB(18, 24, 29),
-	SliderTrackFill       = Color3.fromRGB(98, 211, 190),
+	SliderTrackFill       = Color3.fromRGB(89, 211, 184),
 	SliderTrackFillHover  = Color3.fromRGB(136, 236, 214),
 	SliderThumb           = Color3.fromRGB(234, 244, 240),
 	SliderThumbHover      = Color3.fromRGB(255, 255, 255),
@@ -543,7 +548,7 @@ local Theme = {
 	NotificationBackground = Color3.fromRGB(12, 17, 21),
 	NotificationBorder     = Color3.fromRGB(73, 112, 119),
 	NotificationText       = Color3.fromRGB(237, 245, 242),
-	NotificationAccent     = Color3.fromRGB(98, 211, 190),
+	NotificationAccent     = Color3.fromRGB(89, 211, 184),
 	TooltipBackground      = Color3.fromRGB(10, 14, 18),
 	TooltipBorder          = Color3.fromRGB(86, 119, 126),
 	TooltipText            = Color3.fromRGB(226, 235, 232),
@@ -558,15 +563,17 @@ local Theme = {
 
 	SectionHover = Color3.fromRGB(27, 35, 42),
 
-	-- Font metrics are intentionally ratio based. Roblox Drawing fonts do not
+	-- Font metrics are intentionally ratio based. The User Interface family is
+	-- selected instead of a code font so long labels read like a polished product
+	-- rather than executor console output. Roblox Drawing fonts do not
 	-- provide full text measurement everywhere, so the library uses predictable
 	-- estimates that scale together.
-	Font            = 2,
-	TitleFontSize   = 18,
-	SectionFontSize = 15,
-	ElementFontSize = 14,
+	Font            = 0,
+	TitleFontSize   = 20,
+	SectionFontSize = 16,
+	ElementFontSize = 15,
 
-	FontCharWidthRatio = 0.52,
+	FontCharWidthRatio = 0.5,
 
 	FontLineHeightRatio = 1.35,
 
@@ -576,38 +583,80 @@ local Theme = {
 
 	-- Layout tokens are kept together so adaptive scaling can resize the whole
 	-- interface proportionally when the viewport changes.
-	WindowWidth         = 620,
-	TitleBarHeight      = 48,
-	WindowVisibleHeight = 640,
-	ElementHeight       = 34,
-	ElementPadding      = 9,
-	SectionPadding      = 14,
-	InnerMargin         = 16,
-	ScrollbarWidth      = 6,
+	WindowWidth         = 720,
+	TitleBarHeight      = 50,
+	WindowVisibleHeight = 680,
+	ElementHeight       = 38,
+	ElementPadding      = 10,
+	SectionPadding      = 16,
+	InnerMargin         = 18,
+	ScrollbarWidth      = 7,
+	WindowCornerRadius  = 8,
+	ControlCornerRadius = 6,
+	CompactCornerRadius = 4,
 
 	-- Color picker grid dimensions.
 	ColorSwatchSize = 24,
 	ColorSwatchGap  = 4,
 
 	-- Notification stack dimensions and lifetime.
-	NotificationWidth    = 280,
-	NotificationHeight   = 38,
+	NotificationWidth    = 320,
+	NotificationHeight   = 44,
 	NotificationDuration = 5,
 	NotificationMargin   = 12,
 	TooltipDelay         = 3,
-	TooltipWidth         = 300,
-	TooltipPadding       = 9,
+	TooltipWidth         = 340,
+	TooltipPadding       = 11,
 	TooltipMaximumLines  = 8,
 }
+
+-- Normalize rectangle rounding across retained and immediate renderers. Native
+-- Drawing implementations that do not expose Square.Rounding safely ignore the
+-- property through SetRenderProperty, while the bundled renderer and
+-- DrawingImmediate both produce the same softly rounded control geometry.
+do
+	local RawDrawingImmediateRectangle = DrawingImmediateRectangle
+	local RawDrawingImmediateFilledRectangle = DrawingImmediateFilledRectangle
+
+	local function ResolveImmediateRectangleRounding(RectangleSize, RequestedRounding)
+		local MaximumRounding = math.max(0, math.min(RectangleSize.X, RectangleSize.Y) * 0.5)
+		local PreferredRounding = tonumber(RequestedRounding) or 0
+		if PreferredRounding <= 0 then
+			PreferredRounding = Theme.ControlCornerRadius
+		end
+		return math.min(PreferredRounding, MaximumRounding)
+	end
+
+	if RawDrawingImmediateRectangle then
+		DrawingImmediateRectangle = function(TopLeftPosition, RectangleSize, RectangleColor, Opacity, Rounding, Thickness)
+			return RawDrawingImmediateRectangle(
+				TopLeftPosition,
+				RectangleSize,
+				RectangleColor,
+				Opacity,
+				ResolveImmediateRectangleRounding(RectangleSize, Rounding),
+				Thickness
+			)
+		end
+	end
+
+	if RawDrawingImmediateFilledRectangle then
+		DrawingImmediateFilledRectangle = function(TopLeftPosition, RectangleSize, RectangleColor, Opacity, Rounding)
+			return RawDrawingImmediateFilledRectangle(
+				TopLeftPosition,
+				RectangleSize,
+				RectangleColor,
+				Opacity,
+				ResolveImmediateRectangleRounding(RectangleSize, Rounding)
+			)
+		end
+	end
+end
 
 -- The following helpers derive all text measurements from Theme ratios. That
 -- keeps labels, text boxes, and wrapped paragraphs aligned after scaling.
 local function FontLineHeight(FontSize)
 	return math.ceil(FontSize * Theme.FontLineHeightRatio)
-end
-
-local function FontVerticalPadding(FontSize)
-	return math.ceil(FontSize * Theme.FontVerticalPaddingRatio)
 end
 
 local function LabelVerticalPadding(FontSize)
@@ -626,6 +675,20 @@ local function TextAvailableWidth(ElementWidth, FontSize)
 	return ElementWidth - FontHorizontalInset(FontSize) * 2
 end
 
+function Theme:GetElementAvailableWidth(Element, Window)
+	-- Every layout, renderer, and hit-test path must reserve the same amount of
+	-- horizontal space for the main scrollbar. Previously TextBox height was
+	-- calculated with the wider pre-scrollbar width and rendered with the narrower
+	-- width, which could switch it into stacked mode without allocating a second
+	-- line and let its value overlap the following control.
+	local ElementWidth = math.max(1, tonumber(Element and Element._Width) or 1)
+	local MainScrollbarReservedWidth = Window
+		and Window._MaxScroll > 0
+		and self.ScrollbarWidth + 4
+		or 0
+	return math.max(1, ElementWidth - MainScrollbarReservedWidth)
+end
+
 GetEditableTextCharacterWidth = function(FontSize)
 	-- Text boxes use a tighter width than wrapped paragraphs because Drawing
 	-- renders the selected monospaced font narrower than the old conservative
@@ -640,8 +703,8 @@ end
 -- windows keep the existing horizontal tab scrolling behavior.
 GetPageTabLayout = function(Window, WindowWidth)
 	local TabCount = #Window._Pages
-	local TabBarPadding = 10
-	local TabGap = 6
+	local TabBarPadding = 12
+	local TabGap = 8
 	local AvailableTabWidth = math.max(1, WindowWidth - TabBarPadding * 2)
 	local TabWidths = {}
 	local TabOffsets = {}
@@ -661,7 +724,7 @@ GetPageTabLayout = function(Window, WindowWidth)
 	end
 
 	for PageIndex, Page in ipairs(Window._Pages) do
-		local PreferredTabWidth = math.max(92, #tostring(Page.Title) * CharacterWidth + 28)
+		local PreferredTabWidth = math.max(104, #tostring(Page.Title) * CharacterWidth + 34)
 		TabWidths[PageIndex] = PreferredTabWidth
 		TotalTabWidth = TotalTabWidth + PreferredTabWidth
 	end
@@ -701,27 +764,25 @@ local function TruncateTextWithAsciiEllipsis(DisplayText, MaximumCharacters)
 	-- long strings are shortened before they reach the renderer. ASCII dots are
 	-- used instead of a single Unicode ellipsis to keep the file and output
 	-- friendly to executors with weaker string handling.
-	if #DisplayText <= MaximumCharacters then
-		return DisplayText
+	local SafeDisplayText = tostring(DisplayText or "")
+	local SafeMaximumCharacters = math.max(1, math.floor(tonumber(MaximumCharacters) or 1))
+	if #SafeDisplayText <= SafeMaximumCharacters then
+		return SafeDisplayText
 	end
 
-	local PreservedCharacterCount = math.max(1, MaximumCharacters - #AsciiEllipsis)
-	return string.format("%s%s", string.sub(DisplayText, 1, PreservedCharacterCount), AsciiEllipsis)
-end
-
-local function ClipEditableTextForWidth(DisplayText, MaximumCharacters, IsFocused)
-	-- Focused text boxes keep the end of the string visible because that is
-	-- where new input appears. Unfocused text uses a front slice with ellipsis
-	-- so labels and saved values are easier to scan.
-	if #DisplayText <= MaximumCharacters then
-		return DisplayText
+	-- Extremely narrow controls may not even have room for all three dots. Keep
+	-- the result inside the requested character budget instead of returning one
+	-- preserved character plus an ellipsis that is wider than the control.
+	if SafeMaximumCharacters <= #AsciiEllipsis then
+		return string.sub(AsciiEllipsis, 1, SafeMaximumCharacters)
 	end
 
-	if IsFocused then
-		return string.sub(DisplayText, #DisplayText - MaximumCharacters + 1)
-	end
-
-	return TruncateTextWithAsciiEllipsis(DisplayText, MaximumCharacters)
+	local PreservedCharacterCount = SafeMaximumCharacters - #AsciiEllipsis
+	return string.format(
+		"%s%s",
+		string.sub(SafeDisplayText, 1, PreservedCharacterCount),
+		AsciiEllipsis
+	)
 end
 
 local function GetTextBoxSuggestionDropdownHeight(Element)
@@ -1365,7 +1426,7 @@ local function MakeDrawingFactory(TrackedDrawingsTable)
 			return nil 
 		end
 
-		local DrawingObject = Drawing.new(ObjectType)
+		local DrawingObject = DrawingLibrary.new(ObjectType)
 		table.insert(TrackedDrawingsTable, DrawingObject)
 
 		return DrawingObject
@@ -1377,6 +1438,7 @@ local function MakeDrawingFactory(TrackedDrawingsTable)
 		ApplyDrawingProperties(RectangleObject, {
 			Color        = FillColor,
 			Filled       = IsFilled,
+			Rounding     = Theme.ControlCornerRadius,
 			Transparency = TransparencyValue or 0.95,
 			ZIndex       = ZIndexValue or 1,
 			Visible      = true,
@@ -1900,7 +1962,7 @@ end)))
 -- Normalize the external Drawing font table before exposing it through the
 -- library. Drawing calls its first font "UI"; the public library name is
 -- expanded to "User Interface" to keep displayed option names descriptive.
-local DrawingFontIdentifiers = (typeof(Drawing) == "table" and Drawing.Fonts) or {
+local DrawingFontIdentifiers = (typeof(DrawingLibrary) == "table" and DrawingLibrary.Fonts) or {
 	UserInterface = 0,
 	System = 1,
 	Plex = 2,
@@ -1918,7 +1980,7 @@ end
 -- loaded above, so callers automatically receive the remote fallback whenever
 -- the executor does not provide a native Drawing.new implementation.
 function Library:GetRenderingBackends()
-	local RetainedDrawingAvailable = typeof(Drawing) == "table" and typeof(Drawing.new) == "function"
+	local RetainedDrawingAvailable = typeof(DrawingLibrary) == "table" and typeof(DrawingLibrary.new) == "function"
 	local ImmediateDrawingAvailable = DrawingImmediateGetPaint ~= nil
 		and (DrawingImmediateText ~= nil or DrawingImmediateOutlinedText ~= nil)
 
@@ -1927,7 +1989,7 @@ function Library:GetRenderingBackends()
 			return nil, "Drawing.new is unavailable"
 		end
 
-		local CreationSucceeded, DrawingObject = pcall(Drawing.new, ObjectType)
+		local CreationSucceeded, DrawingObject = pcall(DrawingLibrary.new, ObjectType)
 		if not CreationSucceeded then
 			return nil, tostring(DrawingObject)
 		end
@@ -1968,6 +2030,48 @@ function Library:GetRenderingBackends()
 			GetProperty = GetRenderProperty,
 			DestroyObject = DestroyRetainedDrawingObject,
 		},
+	}
+end
+
+function Theme:GetSliderTextLayoutMetrics(Element, SliderPosition, SliderWidth)
+	-- Slider captions and values share one line, so the value receives a bounded
+	-- right-aligned region and the caption uses only the remaining width. This
+	-- prevents long labels from painting through numeric values or outside the
+	-- section while preserving the complete value whenever practical.
+	local SafeSliderWidth = math.max(1, tonumber(SliderWidth) or 1)
+	local CharacterWidth = GetEditableTextCharacterWidth(self.ElementFontSize)
+	local HorizontalGap = math.max(8, CharacterWidth)
+	local RawValueText = tostring(Element._Value or 0)
+	local MaximumValueCharacters = math.max(
+		1,
+		math.floor((SafeSliderWidth * 0.4) / CharacterWidth)
+	)
+	local ValueDisplayText = TruncateTextWithAsciiEllipsis(
+		RawValueText,
+		MaximumValueCharacters
+	)
+	local ValueTextWidth = math.min(
+		SafeSliderWidth,
+		#ValueDisplayText * CharacterWidth
+	)
+	local ValuePositionX = SliderPosition.X + SafeSliderWidth - ValueTextWidth
+	local LabelAvailableWidth = math.max(
+		CharacterWidth,
+		ValuePositionX - SliderPosition.X - HorizontalGap
+	)
+	local MaximumLabelCharacters = math.max(
+		1,
+		math.floor(LabelAvailableWidth / CharacterWidth)
+	)
+
+	return {
+		LabelPosition = SliderPosition,
+		LabelDisplayText = TruncateTextWithAsciiEllipsis(
+			tostring(Element._Text or ""),
+			MaximumLabelCharacters
+		),
+		ValuePosition = Vector2.new(ValuePositionX, SliderPosition.Y),
+		ValueDisplayText = ValueDisplayText,
 	}
 end
 
@@ -2227,7 +2331,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 	Window._Pages = {}
 	Window._ActivePageIndex = 1
-	Window._TabBarHeight = 34
+	Window._TabBarHeight = 40
 	Window._TabDrawings = {}
 	Window._TabScrollOffset = 0
 
@@ -2259,10 +2363,6 @@ function Library:CreateWindow(WindowConfiguration)
 	local TitleAccentCircleDrawing = nil
 	local TitleAccentOuterGlowCircleDrawing = nil
 	local WindowTopAccentDrawing = nil
-	local SaveButtonBackgroundDrawing = nil
-	local SaveButtonTextDrawing = nil
-	local ExitButtonBackgroundDrawing = nil
-	local ExitButtonTextDrawing = nil
 	local TitleBarSeparatorDrawing = nil
 	local CloseButtonBackgroundDrawing = nil
 	local CloseButtonBorderDrawing = nil
@@ -2331,7 +2431,7 @@ function Library:CreateWindow(WindowConfiguration)
 		ApplyDrawingProperties(TitleAccentCircleDrawing, {
 			Filled = true,
 			Radius = 3,
-			NumSides = 12,
+			NumSides = 48,
 			Transparency = 1,
 			Color = Theme.TitleBarSeparator,
 			ZIndex = 6,
@@ -2342,7 +2442,7 @@ function Library:CreateWindow(WindowConfiguration)
 		ApplyDrawingProperties(TitleAccentOuterGlowCircleDrawing, {
 			Filled = false,
 			Radius = 5,
-			NumSides = 12,
+			NumSides = 48,
 			Transparency = 0.4,
 			Color = Theme.TitleBarSeparator,
 			Thickness = 1,
@@ -2375,37 +2475,6 @@ function Library:CreateWindow(WindowConfiguration)
 			Visible = true,
 		})
 
-
-		Window._GlowDrawings = {}
-		for GlowIndex = 1, 3 do
-			Window._GlowDrawings[GlowIndex] = CreateRectangleDrawing(Theme.TitleBarSeparator, false, 0, 0.08 / GlowIndex)
-		end
-
-		Window._CornerBrackets = {}
-
-		for BracketIndex = 1, 8 do
-			Window._CornerBrackets[BracketIndex] = CreateTrackedDrawingObject("Line")
-			ApplyDrawingProperties(Window._CornerBrackets[BracketIndex], {
-				Thickness = 1.25,
-				Color = Theme.TitleBarSeparator,
-				Transparency = 0.55,
-				ZIndex = 4,
-				Visible = true,
-			})
-		end
-
-		Window._SideTicks = {}
-		for TickIndex = 1, 4 do
-			Window._SideTicks[TickIndex] = CreateTrackedDrawingObject("Line")
-			ApplyDrawingProperties(Window._SideTicks[TickIndex], {
-				Thickness = 1,
-				Color = Theme.TitleBarSeparator,
-				Transparency = 0.35,
-				ZIndex = 4,
-				Visible = true,
-			})
-		end
-
 		Window._ResizeGripLines = {}
 		for ResizeGripLineIndex = 1, 3 do
 			Window._ResizeGripLines[ResizeGripLineIndex] = CreateTrackedDrawingObject("Line")
@@ -2423,7 +2492,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Radius = 4.5,
 			Filled = false,
 			Thickness = 1.5,
-			NumSides = 12,
+			NumSides = 48,
 			Color = Theme.TitleBarText,
 			ZIndex = 6,
 			Visible = true,
@@ -2446,7 +2515,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Radius = 3.5,
 			Filled = false,
 			Thickness = 1.5,
-			NumSides = 10,
+			NumSides = 48,
 			Color = Theme.TextBoxPlaceholder,
 			ZIndex = 18,
 			Visible = false,
@@ -2488,15 +2557,6 @@ function Library:CreateWindow(WindowConfiguration)
 			CloseButtonBackgroundDrawing, CloseButtonBorderDrawing, CloseButtonTextDrawing,
 			WindowBottomBorderDrawing, WindowTopAccentDrawing,
 		}
-		for DiscardGlowIndex, GlowObject in ipairs(Window._GlowDrawings) do
-			table.insert(Window._DrawingObjects, GlowObject)
-		end
-		for DiscardBracketIndex, LineObject in ipairs(Window._CornerBrackets) do
-			table.insert(Window._DrawingObjects, LineObject)
-		end
-		for DiscardTickIndex, TickObject in ipairs(Window._SideTicks) do
-			table.insert(Window._DrawingObjects, TickObject)
-		end
 		for DiscardResizeGripLineIndex, ResizeGripLineObject in ipairs(Window._ResizeGripLines) do
 			table.insert(Window._DrawingObjects, ResizeGripLineObject)
 		end
@@ -2644,12 +2704,6 @@ function Library:CreateWindow(WindowConfiguration)
 				if SectionObject._PageIndex and SectionObject._PageIndex ~= Window._ActivePageIndex then
 					local VisibilityObjects = { SectionObject._FullBackground, SectionObject._Background, SectionObject._Border, SectionObject._TextLabel, SectionObject._AccentLine, SectionObject._LeftAccentLine }
 					SetDrawingObjectsVisibility(VisibilityObjects, false)
-					if SectionObject._TopRightTechLine then SetRenderProperty(SectionObject._TopRightTechLine, "Visible", false) end
-					if SectionObject._CornerBrackets then
-						for DiscardCornerBracketIndex, LineObject in ipairs(SectionObject._CornerBrackets) do
-							SetRenderProperty(LineObject, "Visible", false)
-						end
-					end
 					for DiscardElementIndex, Element in ipairs(SectionObject._Elements) do
 						if Element._Type == "TextLabel" then
 							SetDrawingObjectsVisibility({ Element._AccentLineDrawing }, false)
@@ -2721,12 +2775,14 @@ function Library:CreateWindow(WindowConfiguration)
 				Element._PositionX = CurrentX + 5
 				Element._PositionY = CurrentY + SectionContentHeight - SectionScrollOffset
 				Element._Width = ColumnWidth - 10 - (HasScrollbar and (Theme.ScrollbarWidth + 4) or 0)
+				local ElementAvailableWidth = Theme:GetElementAvailableWidth(Element, Window)
+				Element._AvailableWidth = ElementAvailableWidth
 
 				if Element._Type == "TextLabel" then
-					local AvailWidth = TextAvailableWidth(Element._Width, Theme.ElementFontSize)
-					if not Element._WrappedLines or Element._LastText ~= Element._Text or Element._LastWidth ~= Element._Width or Element._LastFontSize ~= Theme.ElementFontSize then
+					local AvailWidth = TextAvailableWidth(ElementAvailableWidth, Theme.ElementFontSize)
+					if not Element._WrappedLines or Element._LastText ~= Element._Text or Element._LastWidth ~= ElementAvailableWidth or Element._LastFontSize ~= Theme.ElementFontSize then
 						Element._LastText = Element._Text
-						Element._LastWidth = Element._Width
+						Element._LastWidth = ElementAvailableWidth
 						Element._LastFontSize = Theme.ElementFontSize
 						Element._WrappedLines = WrapText(Element._Text, AvailWidth, Theme.ElementFontSize)
 					end
@@ -2735,21 +2791,19 @@ function Library:CreateWindow(WindowConfiguration)
 					local TextBoxMetrics = GetTextBoxLayoutMetrics(
 						Element,
 						Vector2.new(0, 0),
-						Element._Width
+						ElementAvailableWidth
 					)
 					Element._TextBoxBaseHeight = TextBoxMetrics.BaseHeight
 					Element._Height = TextBoxMetrics.BaseHeight + GetTextBoxSuggestionDropdownHeight(Element)
 				end
 				if Element._Type == "Slider" then
-					local ActualWidth = Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
 					Element._TrackPositionX = Element._PositionX
 					Element._TrackPositionY = Element._PositionY + Theme.ElementFontSize + 4
-					Element._TrackTotalWidth = ActualWidth
+					Element._TrackTotalWidth = ElementAvailableWidth
 					Element._TrackTotalHeight = 6
 				elseif Element._Type == "ColorPicker" then
-					local ActualWidth = Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
 					Element._SwatchSize = Theme.ColorSwatchSize
-					Element._SwatchPositionX = Element._PositionX + ActualWidth - Element._SwatchSize - 5
+					Element._SwatchPositionX = Element._PositionX + ElementAvailableWidth - Element._SwatchSize - 5
 					Element._SwatchPositionY = Element._PositionY + (Element._Height - Element._SwatchSize) / 2
 				elseif Element._Type == "Dropdown" then
 					local ItemVerticalOffset = Element._PositionY + Element._Height
@@ -2758,13 +2812,13 @@ function Library:CreateWindow(WindowConfiguration)
 					if Element._Expanded then
 						Element._OptionsRegion = {
 							Position = WindowPosition + Vector2.new(Element._PositionX, ItemVerticalOffset - Window._ScrollOffset),
-							Size = Vector2.new(Element._Width, GetDropdownOptionsHeight(Element)),
+							Size = Vector2.new(ElementAvailableWidth, GetDropdownOptionsHeight(Element)),
 						}
 					end
 					for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects) do
 						ItemData._PositionX = Element._PositionX
 						ItemData._PositionY = ItemVerticalOffset + (ItemIndex - 1) * Theme.ElementHeight - DropdownScrollOffset
-						ItemData._Width = Element._Width
+						ItemData._Width = ElementAvailableWidth
 					end
 				end
 
@@ -2782,14 +2836,14 @@ function Library:CreateWindow(WindowConfiguration)
 
 				if not UseImmediateMode then
 					local ElementAbsolutePosition = WindowPosition + Vector2.new(Element._PositionX, Element._PositionY - Window._ScrollOffset)
-					local ElementAbsoluteSize = Vector2.new(Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0), Element._Height)
+					local ElementAbsoluteSize = Vector2.new(ElementAvailableWidth, Element._Height)
 
 					local IsElementVisible = IsElementVisibleInViewport(ElementAbsolutePosition.Y, Element._Height, Section, Window, WindowPosition.Y)
 
 					if Element._Type == "TextLabel" then
 
 						if not Element._WrappedLines or #Element._WrappedLines == 0 then
-							local AvailWidth = TextAvailableWidth(Element._Width, Theme.ElementFontSize)
+							local AvailWidth = TextAvailableWidth(ElementAvailableWidth, Theme.ElementFontSize)
 							Element._WrappedLines = WrapText(Element._Text, AvailWidth, Theme.ElementFontSize)
 							Element._Height = TextBlockHeight(#Element._WrappedLines, Theme.ElementFontSize)
 							Element:_RebuildLineDrawings(Element._WrappedLines)
@@ -2901,7 +2955,14 @@ function Library:CreateWindow(WindowConfiguration)
 							ApplyDrawingProperties(Element._BorderDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = Theme.ButtonBorder, Visible = IsElementVisible })
 						end
 						if Element._TextDrawing then
+							-- Reserve the indicator region so descriptive toggle names never
+							-- paint beneath the circular state marker on narrow sections.
+							local AvailableTextWidth = math.max(1, ElementAbsoluteSize.X - 42)
+							local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
+							local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
+							local DisplayText = TruncateTextWithAsciiEllipsis(Element._Text, MaximumCharacters)
 							ApplyDrawingProperties(Element._TextDrawing, {
+								Text = DisplayText,
 								Position = ElementAbsolutePosition + Vector2.new(10, (Element._Height - Theme.ElementFontSize) / 2),
 								Size = Theme.ElementFontSize,
 								Color = Theme.ButtonText,
@@ -3200,12 +3261,24 @@ function Library:CreateWindow(WindowConfiguration)
 					elseif Element._Type == "Slider" then
 						local SliderLabelColor = Theme.SliderText:Lerp(Theme.TitleBarText, Element._HoverFactor or 0)
 						local ValueColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Element._ActiveFactor or 0)
+						local SliderTextMetrics = Theme:GetSliderTextLayoutMetrics(
+							Element,
+							ElementAbsolutePosition,
+							Element._TrackTotalWidth
+						)
 						if Element._LabelDrawing then
-							ApplyDrawingProperties(Element._LabelDrawing, { Position = ElementAbsolutePosition, Color = SliderLabelColor, Size = Theme.ElementFontSize, Visible = IsElementVisible })
+							ApplyDrawingProperties(Element._LabelDrawing, {
+								Position = SliderTextMetrics.LabelPosition,
+								Text = SliderTextMetrics.LabelDisplayText,
+								Color = SliderLabelColor,
+								Size = Theme.ElementFontSize,
+								Visible = IsElementVisible,
+							})
 						end
 						if Element._ValueTextDrawing then
 							ApplyDrawingProperties(Element._ValueTextDrawing, {
-								Position = ElementAbsolutePosition + Vector2.new(Element._TrackTotalWidth - 48, 0),
+								Position = SliderTextMetrics.ValuePosition,
+								Text = SliderTextMetrics.ValueDisplayText,
 								Color = ValueColor,
 								Size = Theme.ElementFontSize,
 								Visible = IsElementVisible,
@@ -3482,16 +3555,6 @@ function Library:CreateWindow(WindowConfiguration)
 					end
 				end
 
-				if Section._CornerBrackets then
-					for BracketIndex = 1, #Section._CornerBrackets do
-						ApplyDrawingProperties(Section._CornerBrackets[BracketIndex], { Visible = false })
-					end
-				end
-
-				if Section._TopRightTechLine then
-					ApplyDrawingProperties(Section._TopRightTechLine, { Visible = false })
-				end
-
 				if Section._TextLabel then
 					local TitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionAbsolutePosition.Y + (Theme.ElementHeight - Theme.SectionFontSize) / 2
@@ -3712,30 +3775,6 @@ function Library:CreateWindow(WindowConfiguration)
 				})
 			end
 
-			if Window._GlowDrawings then
-				local FullWindowSize = Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight + Window._VisibleHeight)
-				for GlowIndex = 1, #Window._GlowDrawings do
-					ApplyDrawingProperties(Window._GlowDrawings[GlowIndex], {
-						Position = WindowPosition - Vector2.new(GlowIndex, GlowIndex),
-						Size = FullWindowSize + Vector2.new(GlowIndex * 2, GlowIndex * 2),
-						Visible = Window._Visible,
-					})
-				end
-			end
-
-			if Window._CornerBrackets then
-				local BracketDrawings = Window._CornerBrackets
-				for BracketIndex = 1, #BracketDrawings do
-					ApplyDrawingProperties(BracketDrawings[BracketIndex], { Visible = false })
-				end
-			end
-
-			if Window._SideTicks then
-				for TickIndex = 1, #Window._SideTicks do
-					ApplyDrawingProperties(Window._SideTicks[TickIndex], { Visible = false })
-				end
-			end
-
 			if Window._ResizeGripLines then
 				local ResizeGripBasePosition = Vector2.new(
 					WindowPosition.X + Theme.WindowWidth - 18,
@@ -3905,7 +3944,7 @@ function Library:CreateWindow(WindowConfiguration)
 				else
 					local HighlightAlpha = math.clamp(1 - (ElapsedTime / 2.0), 0, 1)
 					local HighlightAbsolutePosition = WindowPosition + Vector2.new(HighlightElement._PositionX, HighlightElement._PositionY - Window._ScrollOffset)
-					local HighlightAbsoluteSize = Vector2.new(HighlightElement._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0), HighlightElement._Height)
+					local HighlightAbsoluteSize = Vector2.new(Theme:GetElementAvailableWidth(HighlightElement, Window), HighlightElement._Height)
 
 					ApplyDrawingProperties(Window._ElementHighlightDrawing, {
 						Position = HighlightAbsolutePosition,
@@ -3988,6 +4027,16 @@ function Library:CreateWindow(WindowConfiguration)
 		if Window._ActiveColorPicker and Window._ActiveColorPicker._PopupPos then
 			Window._ActiveColorPicker:_BuildPopupDrawings()
 		end
+
+		-- A section can gain or lose its private scrollbar while the current pass
+		-- is measuring dynamic labels, suggestions, or an expanded dropdown. Run
+		-- one guarded correction pass after all sections have been measured so
+		-- every control reserves the final scrollbar width immediately.
+		if LayoutRequiresScrollbarCorrection and not Window._ApplyingScrollbarLayoutCorrection then
+			Window._ApplyingScrollbarLayoutCorrection = true
+			Window:RecalculateLayout()
+			Window._ApplyingScrollbarLayoutCorrection = false
+		end
 	end
 
 	local function UpdateElementsVisibility()
@@ -4002,13 +4051,6 @@ function Library:CreateWindow(WindowConfiguration)
 
 			local VisibilityObjects = { Section._FullBackground, Section._Background, Section._Border, Section._TextLabel, Section._AccentLine, Section._LeftAccentLine }
 			SetDrawingObjectsVisibility(VisibilityObjects, IsSectionVisible)
-			if Section._TopRightTechLine then SetRenderProperty(Section._TopRightTechLine, "Visible", false) end
-			if Section._CornerBrackets then
-				for DiscardLineIndex, LineObject in ipairs(Section._CornerBrackets) do
-					SetRenderProperty(LineObject, "Visible", false)
-				end
-			end
-
 			for ElementIndex, Element in ipairs(Section._Elements) do
 				if Element._Type == "TextLabel" then
 					SetDrawingObjectsVisibility({ Element._AccentLineDrawing }, IsSectionVisible)
@@ -4062,11 +4104,6 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 		end
 
-		if LayoutRequiresScrollbarCorrection and not Window._ApplyingScrollbarLayoutCorrection then
-			Window._ApplyingScrollbarLayoutCorrection = true
-			Window:RecalculateLayout()
-			Window._ApplyingScrollbarLayoutCorrection = false
-		end
 	end
 
 	local function SetEntireWindowVisibility(IsVisible)
@@ -4077,16 +4114,6 @@ function Library:CreateWindow(WindowConfiguration)
 
 		Window._Visible = IsVisible
 		SetDrawingObjectsVisibility(Window._DrawingObjects, IsVisible)
-		if Window._CornerBrackets then
-			for BracketIndex = 1, #Window._CornerBrackets do
-				SetRenderProperty(Window._CornerBrackets[BracketIndex], "Visible", false)
-			end
-		end
-		if Window._SideTicks then
-			for TickIndex = 1, #Window._SideTicks do
-				SetRenderProperty(Window._SideTicks[TickIndex], "Visible", false)
-			end
-		end
 		UpdateElementsVisibility()
 	end
 
@@ -4327,27 +4354,6 @@ function Library:CreateWindow(WindowConfiguration)
 				ZIndex = 8,
 				Visible = true,
 			})
-			Section._CornerBrackets = {}
-			for BracketIndex = 1, 4 do
-				Section._CornerBrackets[BracketIndex] = CreateTrackedDrawingObject("Line")
-				ApplyDrawingProperties(Section._CornerBrackets[BracketIndex], {
-					Thickness = 1.25,
-					Color = Theme.TitleBarSeparator,
-					Transparency = 0.5,
-					ZIndex = 8,
-					Visible = true,
-				})
-			end
-
-			Section._TopRightTechLine = CreateTrackedDrawingObject("Line")
-			ApplyDrawingProperties(Section._TopRightTechLine, {
-				Thickness = 1,
-				Transparency = 0.35,
-				Color = Theme.TitleBarSeparator,
-				ZIndex = 8,
-				Visible = true,
-			})
-
 			if Section._MaxHeight then
 				Section._ScrollbarTrack = CreateRectangleDrawing(Theme.ScrollbarBackground, true, 8, 1)
 				Section._ScrollbarHandle = CreateRectangleDrawing(Theme.ScrollbarHandle, true, 9, 1)
@@ -4564,6 +4570,18 @@ function Library:CreateWindow(WindowConfiguration)
 
 			function Element:GetValue()
 				return Element._Value
+			end
+
+			function Element:SetPlaceholder(NewPlaceholder)
+				-- Placeholders are mutable because dependent controls can change the
+				-- expected input format at runtime. Retained and immediate renderers
+				-- both read the same normalized field, while an empty retained text
+				-- box is refreshed immediately so no extra layout pass is required.
+				Element._Placeholder = tostring(NewPlaceholder or "")
+				if Element._Value == "" and Element._TextDrawing then
+					SetRenderProperty(Element._TextDrawing, "Text", Element._Placeholder)
+					SetRenderProperty(Element._TextDrawing, "Color", Theme.TextBoxPlaceholder)
+				end
 			end
 
 			function Element:SetSuggestionProvider(NewSuggestionProvider)
@@ -5619,7 +5637,7 @@ function Library:CreateWindow(WindowConfiguration)
 			TextBoxWidth = Window._SearchTextBoxRegion.Size.X
 		else
 			TextBoxPosition = Vector2.new(Window._Position.X + TextBoxElement._PositionX, Window._Position.Y + TextBoxElement._PositionY - Window._ScrollOffset)
-			TextBoxWidth = TextBoxElement._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
+			TextBoxWidth = Theme:GetElementAvailableWidth(TextBoxElement, Window)
 		end
 
 		local Metrics = GetTextBoxInputMetrics(TextBoxElement, TextBoxPosition, TextBoxWidth)
@@ -5824,7 +5842,7 @@ function Library:CreateWindow(WindowConfiguration)
 			for ElementIndex, Element in ipairs(Section._Elements) do
 				local ElementYPosition = Window._Position.Y + Element._PositionY - Window._ScrollOffset
 				local ElementRegionPosition = Vector2.new(Window._Position.X + Element._PositionX, ElementYPosition)
-				local ElementWidth = Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
+				local ElementWidth = Theme:GetElementAvailableWidth(Element, Window)
 				local ElementRegionSize = Vector2.new(ElementWidth, Element._Height)
 				local IsElementVisible = IsElementVisibleInViewport(ElementYPosition, Element._Height, Section, Window, Window._Position.Y)
 				-- A tall element inside an independently scrolling section can remain
@@ -6378,7 +6396,7 @@ function Library:CreateWindow(WindowConfiguration)
 							end
 							ClearFocusedTextBoxes()
 							local TextBoxPosition = Vector2.new(Window._Position.X + Element._PositionX, Window._Position.Y + Element._PositionY - Window._ScrollOffset)
-							local TextBoxWidth = Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0)
+							local TextBoxWidth = Theme:GetElementAvailableWidth(Element, Window)
 							BeginTextBoxMouseSelection(Element, CurrentMousePosition, TextBoxPosition, TextBoxWidth)
 							return
 
@@ -6439,11 +6457,6 @@ function Library:CreateWindow(WindowConfiguration)
 
 			local BodyPosition = Vector2.new(WindowPosition.X, WindowPosition.Y + Theme.TitleBarHeight)
 			local BodySize = Vector2.new(WindowWidth, ContentHeight)
-
-			local FullWindowSize = Vector2.new(WindowWidth, Theme.TitleBarHeight + ContentHeight)
-			for GlowIndex = 1, 3 do
-				DrawingImmediateRectangle(WindowPosition - Vector2.new(GlowIndex, GlowIndex), FullWindowSize + Vector2.new(GlowIndex * 2, GlowIndex * 2), Theme.TitleBarSeparator, 0.08 / GlowIndex, 0, 1)
-			end
 
 			DrawingImmediateFilledRectangle(BodyPosition, BodySize, Theme.WindowBackground, 1, 0)
 			DrawingImmediateFilledRectangle(BodyPosition, Vector2.new(WindowWidth, math.min(58, ContentHeight * 0.24)), Theme.WindowSurfaceHighlight, 0.26, 0)
@@ -6575,7 +6588,7 @@ function Library:CreateWindow(WindowConfiguration)
 			local TitleTextColor   = Theme.TitleBarText:Lerp(Theme.TitleBarTextHover, Window._TitleTextHoverFactor or 0)
 
 			local TitleDotCenter = Vector2.new(WindowPosition.X + Theme.InnerMargin + 4, WindowPosition.Y + Theme.TitleBarHeight / 2)
-			DrawingImmediateCircle(TitleDotCenter, 5, Theme.TitleBarSeparator, 0.4, 12, 1)
+			DrawingImmediateCircle(TitleDotCenter, 5, Theme.TitleBarSeparator, 0.4, 48, 1)
 			DrawImmediateSolidCircle(TitleDotCenter, 2.5, Theme.TitleBarSeparator, 1, 48)
 			DrawingImmediateText(
 				Vector2.new(TitleTextX, TitleTextY),
@@ -6602,7 +6615,7 @@ function Library:CreateWindow(WindowConfiguration)
 				local SearchIconColor = Window._SearchActive and Theme.TitleBarSeparator or (MouseIsOverSearch and Theme.TitleBarTextHover or Theme.TitleBarText)
 				local SearchIconCenter = Window._SearchButtonRegion.Position + Vector2.new(11, 11)
 
-				DrawingImmediateCircle(SearchIconCenter, 4.5, SearchIconColor, 1, 12, 1)
+				DrawingImmediateCircle(SearchIconCenter, 4.5, SearchIconColor, 1, 48, 1)
 				DrawingImmediateLine(SearchIconCenter + Vector2.new(3, 3), SearchIconCenter + Vector2.new(8, 8), SearchIconColor, 1, 1.5)
 			end
 
@@ -6686,7 +6699,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 					if IsElementVisible then
 						local ElementPosition = Vector2.new(WindowPosition.X + Element._PositionX, ElementYPosition)
-						local ElementSize = Vector2.new(Element._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0), Element._Height)
+						local ElementSize = Vector2.new(Theme:GetElementAvailableWidth(Element, Window), Element._Height)
 
 						local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
 
@@ -6788,9 +6801,13 @@ function Library:CreateWindow(WindowConfiguration)
 
 							local TextY = ElementYPosition + (Element._Height - Theme.ElementFontSize) / 2
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
+								local AvailableTextWidth = math.max(1, ElementSize.X - 42)
+								local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
+								local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
+								local DisplayText = TruncateTextWithAsciiEllipsis(Element._Text, MaximumCharacters)
 								DrawingImmediateText(
 									Vector2.new(WindowPosition.X + Element._PositionX + 10, TextY),
-									Theme.Font, Theme.ElementFontSize, Theme.ButtonText, 1, Element._Text, false
+									Theme.Font, Theme.ElementFontSize, Theme.ButtonText, 1, DisplayText, false
 								)
 							end
 
@@ -7005,16 +7022,21 @@ function Library:CreateWindow(WindowConfiguration)
 							if Range == 0 then Range = 1 end
 
 							local SliderLabelColor = Theme.SliderText:Lerp(Theme.TitleBarText, Element._HoverFactor or 0)
-							local TextY = ElementYPosition
+							local SliderTextMetrics = Theme:GetSliderTextLayoutMetrics(
+								Element,
+								Vector2.new(WindowPosition.X + Element._PositionX, ElementYPosition),
+								Element._TrackTotalWidth
+							)
+							local TextY = SliderTextMetrics.LabelPosition.Y
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
 								DrawingImmediateText(
-									Vector2.new(WindowPosition.X + Element._PositionX, TextY),
-									Theme.Font, Theme.ElementFontSize, SliderLabelColor, 1, Element._Text, false
+									SliderTextMetrics.LabelPosition,
+									Theme.Font, Theme.ElementFontSize, SliderLabelColor, 1, SliderTextMetrics.LabelDisplayText, false
 								)
 								local ValueColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Element._ActiveFactor or 0)
 								DrawingImmediateText(
-									Vector2.new(WindowPosition.X + Element._PositionX + Element._TrackTotalWidth - 48, TextY),
-									Theme.Font, Theme.ElementFontSize, ValueColor, 1, tostring(Value), false
+									SliderTextMetrics.ValuePosition,
+									Theme.Font, Theme.ElementFontSize, ValueColor, 1, SliderTextMetrics.ValueDisplayText, false
 								)
 							end
 
@@ -7159,7 +7181,7 @@ function Library:CreateWindow(WindowConfiguration)
 				)
 
 				local TextboxIconCenter = SearchBarPosition + Vector2.new(12, 10)
-				DrawingImmediateCircle(TextboxIconCenter, 3.5, Theme.TextBoxPlaceholder, 1, 12, 1)
+				DrawingImmediateCircle(TextboxIconCenter, 3.5, Theme.TextBoxPlaceholder, 1, 48, 1)
 				DrawingImmediateLine(
 					TextboxIconCenter + Vector2.new(2.5, 2.5),
 					TextboxIconCenter + Vector2.new(5.5, 5.5),
@@ -7261,7 +7283,7 @@ function Library:CreateWindow(WindowConfiguration)
 				else
 					local HighlightAlpha = math.clamp(1 - (ElapsedTime / 2.0), 0, 1)
 					local HighlightAbsolutePosition = WindowPosition + Vector2.new(HighlightElement._PositionX, HighlightElement._PositionY - Window._ScrollOffset)
-					local HighlightAbsoluteSize = Vector2.new(HighlightElement._Width - (Window._MaxScroll > 0 and Theme.ScrollbarWidth + 4 or 0), HighlightElement._Height)
+					local HighlightAbsoluteSize = Vector2.new(Theme:GetElementAvailableWidth(HighlightElement, Window), HighlightElement._Height)
 
 					if (HighlightAbsolutePosition.Y + HighlightElement._Height > ViewportStart) and (HighlightAbsolutePosition.Y < ViewportEnd) then
 						DrawingImmediateRectangle(HighlightAbsolutePosition, HighlightAbsoluteSize, Theme.TitleBarSeparator, HighlightAlpha, 0, 2)
@@ -7333,7 +7355,7 @@ function Library:CreateWindow(WindowConfiguration)
 				)
 
 				local GridStartY = PopupPosition.Y + HeaderHeight + Margin
-				local CurrentMousePosition = GetMouseLocation(UserInputService)
+				local ColorPickerMousePosition = GetMouseLocation(UserInputService)
 				for SwatchIndex = 1, #ColorPalette do
 					local ColumnIndex = (SwatchIndex - 1) % Columns
 					local RowIndex    = math.floor((SwatchIndex - 1) / Columns)
@@ -7342,7 +7364,7 @@ function Library:CreateWindow(WindowConfiguration)
 					local SwatchPos  = Vector2.new(SwatchX, SwatchY)
 					local SwatchSizeVector  = Vector2.new(SwatchSize, SwatchSize)
 					local IsSelected = (SwatchIndex == ColorPicker._TempSelectedSwatchIndex)
-					local IsHovered = IsPointInsideRectangle(CurrentMousePosition, SwatchPos, SwatchSizeVector)
+					local IsHovered = IsPointInsideRectangle(ColorPickerMousePosition, SwatchPos, SwatchSizeVector)
 					DrawingImmediateFilledRectangle(SwatchPos, SwatchSizeVector, ColorPalette[SwatchIndex], 1, 0)
 					DrawingImmediateRectangle(
 						SwatchPos,

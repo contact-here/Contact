@@ -560,6 +560,9 @@ Theme = {
 	CloseButtonBackground = Color3.fromRGB(37, 42, 47),
 	CloseButtonBorder     = Color3.fromRGB(74, 83, 90),
 	CloseButtonHover      = Color3.fromRGB(197, 82, 88),
+	TouchLauncherBackground = Color3.fromRGB(20, 29, 35),
+	TouchLauncherBorder     = Color3.fromRGB(89, 211, 184),
+	TouchLauncherText       = Color3.fromRGB(241, 247, 245),
 
 	SectionHover = Color3.fromRGB(27, 35, 42),
 
@@ -1623,7 +1626,7 @@ Library._Visible = true
 
 Library.ToggleKey = Enum.KeyCode.RightControl
 
-TextEntryInputObjects = {
+local TextEntryInputObjects = {
 	Enum.UserInputType.MouseButton1,
 	Enum.UserInputType.MouseWheel,
 	Enum.KeyCode.A, Enum.KeyCode.B, Enum.KeyCode.C, Enum.KeyCode.D, Enum.KeyCode.E, Enum.KeyCode.F,
@@ -1645,6 +1648,33 @@ TextEntryInputObjects = {
 Library.Connections = {}
 
 Library.Theme = Theme
+
+-- A touch-capable desktop can expose TouchEnabled even when the interface is
+-- primarily operated with a mouse. DeviceType is therefore the authoritative
+-- phone/tablet signal, while the viewport check covers executors that report an
+-- unknown device type on a genuinely compact touch screen.
+local function IsTouchInterfaceDevice()
+	local DetectedDeviceType = GetDeviceType(UserInputService)
+	if DetectedDeviceType == Enum.DeviceType.Phone or DetectedDeviceType == Enum.DeviceType.Tablet then
+		return true
+	end
+	if DetectedDeviceType ~= Enum.DeviceType.Unknown and tostring(DetectedDeviceType) ~= "Unknown" then
+		return false
+	end
+
+	if UserInputService.TouchEnabled ~= true then
+		return false
+	end
+
+	local ViewportSize = GetViewportSize()
+	return math.min(ViewportSize.X, ViewportSize.Y) <= 1100
+end
+
+-- Application scripts use this capability query to expose controls that only
+-- make sense when no physical keyboard shortcut is guaranteed to be present.
+function Library:IsTouchInputAvailable()
+	return IsTouchInterfaceDevice()
+end
 
 local CachedPreferredInput = nil
 
@@ -2242,17 +2272,31 @@ function Library:CreateWindow(WindowConfiguration)
 
 	local CreateTrackedDrawingObject, CreateRectangleDrawing, CreateTextDrawing = MakeDrawingFactory(WindowTrackedDrawings)
 
-	local DeviceType = GetDeviceType(UserInputService)
-	local IsMobileDevice = (DeviceType == Enum.DeviceType.Phone)
+	local DetectedDeviceType = GetDeviceType(UserInputService)
+	local IsPhoneDevice = DetectedDeviceType == Enum.DeviceType.Phone
+	local TouchInputAvailable = Library:IsTouchInputAvailable()
 
-	if IsMobileDevice then
+	if TouchInputAvailable then
 		local MobileTheme = {}
 		for ThemePropertyName, ThemePropertyValue in pairs(Theme) do
 			MobileTheme[ThemePropertyName] = ThemePropertyValue
 		end
-		MobileTheme.WindowWidth = 340
-		MobileTheme.ElementHeight = 36
-		MobileTheme.TitleBarHeight = 40
+
+		-- Touch controls need a larger unscaled target than desktop controls. The
+		-- viewport pass below performs the final proportional scaling and clamps
+		-- the complete window to the currently visible phone or tablet area.
+		MobileTheme.TitleFontSize = 22
+		MobileTheme.SectionFontSize = 17
+		MobileTheme.ElementFontSize = 16
+		MobileTheme.WindowWidth = 720
+		MobileTheme.WindowVisibleHeight = 680
+		MobileTheme.ElementHeight = 46
+		MobileTheme.TitleBarHeight = 54
+		MobileTheme.ElementPadding = 10
+		MobileTheme.SectionPadding = 12
+		MobileTheme.InnerMargin = 14
+		MobileTheme.ScrollbarWidth = 9
+		MobileTheme.Base = nil
 		Theme = MobileTheme
 		Library.Theme = Theme
 	end
@@ -2285,6 +2329,29 @@ function Library:CreateWindow(WindowConfiguration)
 	-- builds that element tree, then perform one complete pass at the end.
 	Window._LayoutBatchDepth = 0
 	Window._LayoutRecalculationPending = false
+	Window._Destroyed = false
+	Window._Destroying = false
+	Window._TouchInputAvailable = TouchInputAvailable
+	Window._IsPhoneDevice = IsPhoneDevice
+	Window._DeviceProfile = TouchInputAvailable and "Touch" or "Desktop"
+	Window._UseSingleColumnLayout = false
+	Window._ViewportScaleInitialized = false
+	Window._CurrentViewportScale = 1
+	Window._HasAppliedDeviceGeometry = false
+	Window._LastPointerPosition = nil
+	Window._InitialResponsiveBaseGeometry = {
+		WindowWidth = Theme.Base.WindowWidth,
+		WindowVisibleHeight = Theme.Base.WindowVisibleHeight,
+	}
+	Window._TouchInteractionState = {
+		ActiveInputObject = nil,
+		StartPosition = nil,
+		PreviousPosition = nil,
+		CurrentPosition = nil,
+		GestureDistance = 0,
+		Scrolling = false,
+		ScrollTarget = nil,
+	}
 
 	Window._Position = WindowConfiguration.Position
 
@@ -2367,6 +2434,9 @@ function Library:CreateWindow(WindowConfiguration)
 	local CloseButtonBackgroundDrawing = nil
 	local CloseButtonBorderDrawing = nil
 	local CloseButtonTextDrawing = nil
+	local TouchLauncherBackgroundDrawing = nil
+	local TouchLauncherBorderDrawing = nil
+	local TouchLauncherTextDrawing = nil
 
 	if not UseImmediateMode and DrawingBackendAvailable then
 
@@ -2456,6 +2526,37 @@ function Library:CreateWindow(WindowConfiguration)
 		CloseButtonBorderDrawing = CreateRectangleDrawing(Theme.CloseButtonBorder, false, 6, 0.9)
 		CloseButtonTextDrawing = CreateTextDrawing("X", 13, Theme.TitleBarText, 7)
 		ApplyDrawingProperties(CloseButtonTextDrawing, { Visible = true })
+
+		if TouchInputAvailable then
+			-- The launcher is intentionally excluded from Window._DrawingObjects. A
+			-- normal hide operation can therefore conceal every window control while
+			-- leaving this small, independently managed recovery control available.
+			TouchLauncherBackgroundDrawing = CreateTrackedDrawingObject("Circle")
+			ApplyDrawingProperties(TouchLauncherBackgroundDrawing, {
+				Filled = true,
+				Radius = 32,
+				NumSides = 64,
+				Transparency = 0.96,
+				Color = Theme.TouchLauncherBackground,
+				ZIndex = 120,
+				Visible = false,
+			})
+
+			TouchLauncherBorderDrawing = CreateTrackedDrawingObject("Circle")
+			ApplyDrawingProperties(TouchLauncherBorderDrawing, {
+				Filled = false,
+				Radius = 32,
+				NumSides = 64,
+				Thickness = 2,
+				Transparency = 0.95,
+				Color = Theme.TouchLauncherBorder,
+				ZIndex = 121,
+				Visible = false,
+			})
+
+			TouchLauncherTextDrawing = CreateTextDrawing("C", 20, Theme.TouchLauncherText, 122)
+			ApplyDrawingProperties(TouchLauncherTextDrawing, { Visible = false })
+		end
 
 		WindowBottomBorderDrawing = CreateTrackedDrawingObject("Line")
 		ApplyDrawingProperties(WindowBottomBorderDrawing, {
@@ -2582,6 +2683,132 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 	end
 
+	function Window:GetCurrentPointerPosition()
+		-- Touch input does not consistently update GetMouseLocation across
+		-- executors. Preserve the latest touch coordinate so hit testing, retained
+		-- rendering, and the immediate renderer all inspect the same position.
+		local TouchInteractionState = Window._TouchInteractionState
+		if TouchInteractionState and TouchInteractionState.CurrentPosition then
+			return TouchInteractionState.CurrentPosition
+		end
+		if Window._LastPointerPosition then
+			return Window._LastPointerPosition
+		end
+		return GetMouseLocation(UserInputService)
+	end
+
+	function Window:GetTouchLauncherGeometry()
+		local Camera = GetCurrentCamera()
+		local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
+		local LauncherRadius = math.clamp(Theme.ElementHeight * 0.82, 28, 38)
+		return {
+			Center = Vector2.new(ViewportSize.X / 2, ViewportSize.Y / 2),
+			Radius = LauncherRadius,
+			HitRadius = LauncherRadius + 12,
+		}
+	end
+
+	function Window:ApplyTouchViewportGeometry(ViewportSize, ViewportScale, ShouldResetResponsiveBase)
+		if not Window._TouchInputAvailable then
+			return
+		end
+
+		if ShouldResetResponsiveBase and Window._InitialResponsiveBaseGeometry then
+			-- Restore the original touch dimensions before recomputing the responsive
+			-- profile. This gives configuration reset a real size reset even after a
+			-- user has manually resized the window and persisted that geometry.
+			Theme.Base.WindowWidth = Window._InitialResponsiveBaseGeometry.WindowWidth
+			Theme.Base.WindowVisibleHeight = Window._InitialResponsiveBaseGeometry.WindowVisibleHeight
+			Theme.WindowWidth = Theme.Base.WindowWidth * ViewportScale
+			Theme.WindowVisibleHeight = Theme.Base.WindowVisibleHeight * ViewportScale
+			Window._HasAppliedDeviceGeometry = false
+		end
+
+		local ViewportMargin = 10
+		local MaximumWindowWidth = math.max(180, ViewportSize.X - ViewportMargin * 2)
+		local PortraitLayout = ViewportSize.Y > ViewportSize.X
+		Window._UseSingleColumnLayout = PortraitLayout or ViewportSize.X <= 760
+
+		if not Window._HasAppliedDeviceGeometry then
+			local PreferredWidthFraction = Window._UseSingleColumnLayout and 0.94
+				or (Window._IsPhoneDevice and 0.72 or 0.84)
+			local MaximumPreferredWidth = Window._IsPhoneDevice and 980 or 1120
+			Theme.WindowWidth = math.min(
+				MaximumWindowWidth,
+				MaximumPreferredWidth,
+				math.max(Theme.WindowWidth, ViewportSize.X * PreferredWidthFraction)
+			)
+
+			local MaximumPreferredBodyHeight = Window._IsPhoneDevice and 720 or 840
+			local PreferredBodyHeight = math.min(
+				MaximumPreferredBodyHeight,
+				ViewportSize.Y * (Window._UseSingleColumnLayout and 0.72 or 0.74)
+			)
+			Theme.WindowVisibleHeight = math.max(Theme.WindowVisibleHeight, PreferredBodyHeight)
+		end
+
+		local MaximumVisibleBodyHeight = math.max(
+			180,
+			ViewportSize.Y - Theme.TitleBarHeight - ViewportMargin * 2
+		)
+		Theme.WindowWidth = math.clamp(
+			Theme.WindowWidth,
+			math.min(300, MaximumWindowWidth),
+			MaximumWindowWidth
+		)
+		Theme.WindowVisibleHeight = math.clamp(
+			Theme.WindowVisibleHeight,
+			math.min(240, MaximumVisibleBodyHeight),
+			MaximumVisibleBodyHeight
+		)
+		Window._VisibleHeight = Theme.WindowVisibleHeight
+	end
+
+	function Window:IsPointInsideTouchLauncher(Point)
+		if not Window._TouchInputAvailable or typeof(Point) ~= "Vector2" then
+			return false
+		end
+
+		local LauncherGeometry = Window:GetTouchLauncherGeometry()
+		return (Point - LauncherGeometry.Center).Magnitude <= LauncherGeometry.HitRadius
+	end
+
+	function Window:UpdateTouchLauncherDrawings()
+		if UseImmediateMode or not Window._TouchInputAvailable then
+			return
+		end
+		if not TouchLauncherBackgroundDrawing or not TouchLauncherBorderDrawing or not TouchLauncherTextDrawing then
+			return
+		end
+
+		local LauncherShouldBeVisible = not Window._Destroyed
+			and (not Window._Visible or not Library._Visible)
+		local LauncherGeometry = Window:GetTouchLauncherGeometry()
+		local LauncherTextSize = math.max(18, Theme.TitleFontSize)
+		local LauncherTextBounds = GetTextBounds
+			and GetTextBounds("C", LauncherTextSize)
+			or Vector2.new(LauncherTextSize * 0.6, LauncherTextSize)
+
+		ApplyDrawingProperties(TouchLauncherBackgroundDrawing, {
+			Position = LauncherGeometry.Center,
+			Radius = LauncherGeometry.Radius,
+			Color = Theme.TouchLauncherBackground,
+			Visible = LauncherShouldBeVisible,
+		})
+		ApplyDrawingProperties(TouchLauncherBorderDrawing, {
+			Position = LauncherGeometry.Center,
+			Radius = LauncherGeometry.Radius,
+			Color = Theme.TouchLauncherBorder,
+			Visible = LauncherShouldBeVisible,
+		})
+		ApplyDrawingProperties(TouchLauncherTextDrawing, {
+			Position = LauncherGeometry.Center - LauncherTextBounds / 2,
+			Size = LauncherTextSize,
+			Color = Theme.TouchLauncherText,
+			Visible = LauncherShouldBeVisible,
+		})
+	end
+
 	Window._SearchActive = false
 	Window._SearchResults = {}
 	Window._HoveredSearchResultIndex = nil
@@ -2694,7 +2921,13 @@ function Library:CreateWindow(WindowConfiguration)
 			SearchBarHeightOffset = 32
 		end
 
-		local ColumnWidth = (Theme.WindowWidth - (Theme.InnerMargin * 3)) / 2
+		-- Narrow touch viewports use one full-width column. Landscape phones and
+		-- tablets retain the denser two-column composition when enough horizontal
+		-- space is available, so the same code adapts cleanly after rotation.
+		local UseSingleColumnLayout = Window._UseSingleColumnLayout == true
+		local ColumnWidth = UseSingleColumnLayout
+			and (Theme.WindowWidth - Theme.InnerMargin * 2)
+			or ((Theme.WindowWidth - Theme.InnerMargin * 3) / 2)
 		local ColumnOnePositionY = Theme.SectionPadding + SearchBarHeightOffset
 		local ColumnTwoPositionY = Theme.SectionPadding + SearchBarHeightOffset
 
@@ -2752,7 +2985,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 		for SectionIndex, Section in ipairs(Window:GetActiveSections()) do
 
-			local IsColumnOne = (ColumnOnePositionY <= ColumnTwoPositionY)
+			local IsColumnOne = UseSingleColumnLayout or (ColumnOnePositionY <= ColumnTwoPositionY)
 			local CurrentX = (IsColumnOne and Theme.InnerMargin or (Theme.InnerMargin * 2 + ColumnWidth))
 			local CurrentY = Theme.TitleBarHeight + Window._TabBarHeight + (IsColumnOne and ColumnOnePositionY or ColumnTwoPositionY)
 
@@ -3225,7 +3458,7 @@ function Library:CreateWindow(WindowConfiguration)
 									and ItemAbsolutePosition.Y + Theme.ElementHeight > OptionsRegion.Position.Y
 									and ItemAbsolutePosition.Y < OptionsRegion.Position.Y + OptionsRegion.Size.Y
 								local IsItemVisible = IsInsideDropdownRegion and IsElementVisibleInViewport(ItemAbsolutePosition.Y, Theme.ElementHeight, Section, Window, WindowPosition.Y)
-								local IsItemHovered = IsItemVisible and IsPointInsideRectangle(GetMouseLocation(UserInputService), ItemAbsolutePosition, Vector2.new(ItemData._Width, Theme.ElementHeight))
+								local IsItemHovered = IsItemVisible and IsPointInsideRectangle(Window:GetCurrentPointerPosition(), ItemAbsolutePosition, Vector2.new(ItemData._Width, Theme.ElementHeight))
 
 								if ItemData.BackgroundDrawing then
 									ApplyDrawingProperties(ItemData.BackgroundDrawing, {
@@ -3437,7 +3670,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 				local IsSectionVisible = (SectionAbsolutePosition.Y + Section._ContentHeight > ViewportStart) and (SectionAbsolutePosition.Y < ViewportEnd) and Window._Visible
 
-				local CurrentMousePos = GetMouseLocation(UserInputService)
+				local CurrentMousePos = Window:GetCurrentPointerPosition()
 				Section._IsHovered = IsPointInsideRectangle(CurrentMousePos, SectionAbsolutePosition, SectionHeaderSize)
 
 				if Section._FullBackground then
@@ -3575,7 +3808,9 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 		end
 
-		local ContentHeight = math.max(ColumnOnePositionY, ColumnTwoPositionY)
+		local ContentHeight = UseSingleColumnLayout
+			and ColumnOnePositionY
+			or math.max(ColumnOnePositionY, ColumnTwoPositionY)
 		Window._CanvasHeight = ContentHeight
 		local AvailableContentViewportHeight = GetWindowContentViewportHeight(Window)
 		Window._MaxScroll = math.max(0, ContentHeight - AvailableContentViewportHeight)
@@ -3813,7 +4048,7 @@ function Library:CreateWindow(WindowConfiguration)
 		if not UseImmediateMode then
 			if Window._SearchIconCircle and Window._SearchIconLine then
 				local CenterPoint = Window._SearchButtonRegion.Position + Vector2.new(11, 11)
-				local MouseIsOverSearch = IsPointInsideRectangle(GetMouseLocation(UserInputService), Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
+				local MouseIsOverSearch = IsPointInsideRectangle(Window:GetCurrentPointerPosition(), Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
 				local SearchIconColor = Window._SearchActive and Theme.TitleBarSeparator or (MouseIsOverSearch and Theme.TitleBarTextHover or Theme.TitleBarText)
 
 				ApplyDrawingProperties(Window._SearchIconCircle, {
@@ -3957,7 +4192,7 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 			end
 
-			local TooltipGeometry = GetTooltipGeometry(Window, GetMouseLocation(UserInputService))
+			local TooltipGeometry = GetTooltipGeometry(Window, Window:GetCurrentPointerPosition())
 			if TooltipGeometry then
 				ApplyDrawingProperties(Window._TooltipBackgroundDrawing, {
 					Position = TooltipGeometry.Position,
@@ -4115,6 +4350,7 @@ function Library:CreateWindow(WindowConfiguration)
 		Window._Visible = IsVisible
 		SetDrawingObjectsVisibility(Window._DrawingObjects, IsVisible)
 		UpdateElementsVisibility()
+		Window:UpdateTouchLauncherDrawings()
 	end
 
 	function Window:SetVisible(IsVisible)
@@ -4131,6 +4367,16 @@ function Library:CreateWindow(WindowConfiguration)
 			Window._MouseInWindow = false
 			Window._HoveredTooltipElement = nil
 			Window._TooltipVisible = false
+			local TouchInteractionState = Window._TouchInteractionState
+			if TouchInteractionState then
+				TouchInteractionState.ActiveInputObject = nil
+				TouchInteractionState.StartPosition = nil
+				TouchInteractionState.PreviousPosition = nil
+				TouchInteractionState.CurrentPosition = nil
+				TouchInteractionState.GestureDistance = 0
+				TouchInteractionState.Scrolling = false
+				TouchInteractionState.ScrollTarget = nil
+			end
 
 			for SectionIndex, Section in ipairs(Window._Sections) do
 				Section._DraggingScrollbar = false
@@ -4157,10 +4403,20 @@ function Library:CreateWindow(WindowConfiguration)
 			Window:SetInputBlocking("Camera", false)
 			Window:SetInputBlocking("Interface", false)
 			Window:SetInputBlocking("Typing", false)
+			Window._ScrollSinkActive = false
+			Window._CameraSinkActive = false
+			Window._InterfaceSinkActive = false
 			Library:ClearInputBlockingForWindow(Window)
 		end
 
 		SetEntireWindowVisibility(ShouldBeVisible)
+		if Window._TouchInputAvailable and not Window._Destroyed then
+			-- Keep a position-aware touch action registered while the interface is
+			-- either visible or represented by its launcher. The action itself passes
+			-- touches outside those regions, so normal mobile game controls remain
+			-- usable without allowing a User Interface tap to reach Roblox underneath.
+			Window:SetInputBlocking("TouchInterface", true)
+		end
 	end
 
 	function Window:GetGeometry()
@@ -4172,6 +4428,7 @@ function Library:CreateWindow(WindowConfiguration)
 			PositionY = Window._Position.Y,
 			WindowWidth = Theme.WindowWidth,
 			WindowVisibleHeight = Window._VisibleHeight,
+			DeviceProfile = Window._DeviceProfile,
 		}
 	end
 
@@ -5452,6 +5709,17 @@ function Library:CreateWindow(WindowConfiguration)
 	local function GetWindowResizeLimits()
 		local Camera = GetCurrentCamera()
 		local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
+		if Window._TouchInputAvailable then
+			local MaximumWidth = math.max(180, ViewportSize.X - 16)
+			local MaximumVisibleHeight = math.max(180, ViewportSize.Y - Theme.TitleBarHeight - 16)
+			return {
+				MinimumWidth = math.min(300, MaximumWidth),
+				MinimumVisibleHeight = math.min(240, MaximumVisibleHeight),
+				MaximumWidth = MaximumWidth,
+				MaximumVisibleHeight = MaximumVisibleHeight,
+			}
+		end
+
 		return {
 			MinimumWidth = 460,
 			MinimumVisibleHeight = 380,
@@ -5465,13 +5733,15 @@ function Library:CreateWindow(WindowConfiguration)
 		local ClampedWindowWidth = math.clamp(NewWindowWidth, ResizeLimits.MinimumWidth, ResizeLimits.MaximumWidth)
 		local ClampedVisibleHeight = math.clamp(NewVisibleHeight, ResizeLimits.MinimumVisibleHeight, ResizeLimits.MaximumVisibleHeight)
 		local BaseWindowWidth = Theme.Base and Theme.Base.WindowWidth or Theme.WindowWidth
-		local CurrentScale = BaseWindowWidth ~= 0 and (Theme.WindowWidth / BaseWindowWidth) or 1
+		local CurrentScale = Window._CurrentViewportScale
+			or (BaseWindowWidth ~= 0 and (Theme.WindowWidth / BaseWindowWidth) or 1)
 		if CurrentScale == 0 then
 			CurrentScale = 1
 		end
 
 		Theme.WindowWidth = ClampedWindowWidth
 		Theme.WindowVisibleHeight = ClampedVisibleHeight
+		Window._HasAppliedDeviceGeometry = true
 
 		if Theme.Base then
 			Theme.Base.WindowWidth = ClampedWindowWidth / CurrentScale
@@ -5503,6 +5773,26 @@ function Library:CreateWindow(WindowConfiguration)
 			return false
 		end
 
+		-- Desktop dimensions saved by an older configuration are usually much too
+		-- large for a phone. Only restore touch geometry that was explicitly saved
+		-- by the touch profile; otherwise retain the responsive size selected by
+		-- UpdateViewportScale and center it inside the current screen.
+		if Window._TouchInputAvailable and Geometry.DeviceProfile ~= Window._DeviceProfile then
+			local Camera = GetCurrentCamera()
+			local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
+			Window:ApplyTouchViewportGeometry(
+				ViewportSize,
+				Window._CurrentViewportScale or 1,
+				true
+			)
+			Window._Position = ClampWindowPosition(Vector2.new(
+				(ViewportSize.X - Theme.WindowWidth) / 2,
+				(ViewportSize.Y - Theme.TitleBarHeight - Window._VisibleHeight) / 2
+			))
+			Window:RecalculateLayout()
+			return true
+		end
+
 		local NewWindowWidth = tonumber(Geometry.WindowWidth)
 		local NewVisibleHeight = tonumber(Geometry.WindowVisibleHeight)
 		if NewWindowWidth and NewVisibleHeight then
@@ -5530,7 +5820,11 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 		end
 
-		local ShouldCaptureInterface = Window._MouseInWindow
+		local TouchPointerIsActive = Window._TouchInteractionState
+			and Window._TouchInteractionState.ActiveInputObject ~= nil
+		local PointerRequestsCapture = Window._MouseInWindow
+			and (not Window._TouchInputAvailable or TouchPointerIsActive)
+		local ShouldCaptureInterface = PointerRequestsCapture
 			or PrimaryMouseButtonHeld
 			or Window._Dragging
 			or Window._Resizing
@@ -5700,6 +5994,110 @@ function Library:CreateWindow(WindowConfiguration)
 		return DidCloseOverlay
 	end
 
+	function Window:ResolveTouchScrollTarget(PointerPosition)
+		-- Title-bar controls remain tappable, while dragging empty title-bar space
+		-- moves the complete window. The resize corner receives the same direct
+		-- manipulation treatment so touch users do not need a tiny scrollbar-like
+		-- gesture to change the window size.
+		if IsPointInsideRectangle(PointerPosition, Window._CloseButtonRegion.Position, Window._CloseButtonRegion.Size)
+			or IsPointInsideRectangle(PointerPosition, Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
+		then
+			return { Kind = "Control" }
+		end
+		if IsPointInsideRectangle(PointerPosition, Window._ResizeGripRegion.Position, Window._ResizeGripRegion.Size) then
+			return { Kind = "Resize" }
+		end
+
+		local TitleBarPosition = Window._Position
+		local TitleBarSize = Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight)
+		if IsPointInsideRectangle(PointerPosition, TitleBarPosition, TitleBarSize) then
+			return { Kind = "Title bar" }
+		end
+
+		local TabBarPosition = Window._Position + Vector2.new(0, Theme.TitleBarHeight)
+		local TabBarSize = Vector2.new(Theme.WindowWidth, Window._TabBarHeight)
+		if Window._TabBarHeight > 0 and IsPointInsideRectangle(PointerPosition, TabBarPosition, TabBarSize) then
+			return { Kind = "Tabs" }
+		end
+
+		local ActiveDropdown = Window._ActiveDropdown
+		if ActiveDropdown and ActiveDropdown._Expanded and ActiveDropdown._OptionsRegion
+			and IsPointInsideRectangle(PointerPosition, ActiveDropdown._OptionsRegion.Position, ActiveDropdown._OptionsRegion.Size)
+		then
+			return { Kind = "Dropdown", Element = ActiveDropdown }
+		end
+
+		for SectionIndex, ScrollableSection in ipairs(Window:GetActiveSections()) do
+			if ScrollableSection._SectionMaxScroll and ScrollableSection._SectionMaxScroll > 0 then
+				local SectionPosition = Window._Position + Vector2.new(
+					ScrollableSection._PositionX,
+					ScrollableSection._PositionY - Window._ScrollOffset
+				)
+				local SectionSize = Vector2.new(
+					ScrollableSection._Width,
+					ScrollableSection._ClippedHeight or ScrollableSection._ContentHeight or 0
+				)
+				if IsPointInsideRectangle(PointerPosition, SectionPosition, SectionSize) then
+					return { Kind = "Section", Section = ScrollableSection }
+				end
+			end
+		end
+
+		return { Kind = "Window" }
+	end
+
+	function Window:ApplyTouchMovement(MovementDelta, TouchTarget)
+		if not TouchTarget then
+			return
+		end
+
+		if TouchTarget.Kind == "Title bar" then
+			Window._Position = ClampWindowPosition(Window._Position + MovementDelta)
+		elseif TouchTarget.Kind == "Resize" then
+			ApplyWindowSize(Theme.WindowWidth + MovementDelta.X, Window._VisibleHeight + MovementDelta.Y)
+		elseif TouchTarget.Kind == "Tabs" then
+			local TabLayout = GetPageTabLayout(Window, Theme.WindowWidth)
+			Window._TabScrollOffset = math.clamp(
+				(Window._TabScrollOffset or 0) - MovementDelta.X,
+				0,
+				TabLayout.MaximumScroll
+			)
+		elseif TouchTarget.Kind == "Dropdown" and TouchTarget.Element then
+			local DropdownElement = TouchTarget.Element
+			DropdownElement._OptionsScrollOffset = math.clamp(
+				(DropdownElement._OptionsScrollOffset or 0) - MovementDelta.Y,
+				0,
+				GetDropdownMaximumScroll(DropdownElement)
+			)
+		elseif TouchTarget.Kind == "Section" and TouchTarget.Section then
+			local ScrollableSection = TouchTarget.Section
+			local PreviousSectionScrollOffset = ScrollableSection._SectionScrollOffset or 0
+			ScrollableSection._SectionScrollOffset = math.clamp(
+				PreviousSectionScrollOffset - MovementDelta.Y,
+				0,
+				ScrollableSection._SectionMaxScroll or 0
+			)
+			if ScrollableSection._SectionScrollOffset == PreviousSectionScrollOffset then
+				-- Once an inner section reaches its boundary, continue the same gesture
+				-- through the page canvas instead of making the user lift their finger
+				-- and begin a second swipe outside the section.
+				Window._ScrollOffset = math.clamp(
+					Window._ScrollOffset - MovementDelta.Y,
+					0,
+					Window._MaxScroll
+				)
+			end
+		elseif TouchTarget.Kind == "Window" then
+			Window._ScrollOffset = math.clamp(
+				Window._ScrollOffset - MovementDelta.Y,
+				0,
+				Window._MaxScroll
+			)
+		end
+
+		Window:RecalculateLayout()
+	end
+
 	table.insert(Window._Connections, WindowFocusReleasedConnect(UserInputService.WindowFocusReleased, NewCClosure(function()
 		WindowHasFocus = false
 		PreviousSecondaryMouseButtonState = false
@@ -5708,31 +6106,125 @@ function Library:CreateWindow(WindowConfiguration)
 		WindowHasFocus = true
 	end)))
 
-	table.insert(Window._Connections, InputBeganSignalConnect(UserInputService.InputBegan, NewCClosure(function(Input, Processed)
-		if Window._Destroyed or not Window._Visible or not Library._Visible then
+	table.insert(Window._Connections, InputBeganSignalConnect(UserInputService.InputBegan, NewCClosure(function(InputObject)
+		if Window._Destroyed then
 			return
 		end
 
-		if Input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+		local InputType = InputObject.UserInputType
+		local IsTouchPointer = InputType == Enum.UserInputType.Touch
+		if InputType ~= Enum.UserInputType.MouseButton1 and not IsTouchPointer then
 			return
 		end
 
-		local CurrentMousePosition = GetMouseLocation(UserInputService)
+		local CurrentPointerPosition = IsTouchPointer
+			and Vector2.new(InputObject.Position.X, InputObject.Position.Y)
+			or GetMouseLocation(UserInputService)
+		Window._LastPointerPosition = CurrentPointerPosition
+
+		-- Closing a touch window only hides it. Tapping the centered launcher is
+		-- handled before normal visibility guards so the interface can always be
+		-- recovered without a keyboard shortcut.
+		if IsTouchPointer and (not Window._Visible or not Library._Visible) then
+			if Window:IsPointInsideTouchLauncher(CurrentPointerPosition) then
+				Library._Visible = true
+				Window:SetVisible(true)
+				Window:RecalculateLayout()
+			end
+			return
+		end
+
+		if not Window._Visible or not Library._Visible then
+			return
+		end
+
 		if not UpdateHoverState then
 			return
 		end
-		UpdateHoverState(CurrentMousePosition)
+		UpdateHoverState(CurrentPointerPosition)
 
 		if Window._MouseInWindow then
-			QueuedPrimaryClick = true
 			PrimaryMouseButtonHeld = true
 			PreviousMouseButtonState = true
+			if IsTouchPointer then
+				local TouchInteractionState = Window._TouchInteractionState
+				TouchInteractionState.ActiveInputObject = InputObject
+				TouchInteractionState.StartPosition = CurrentPointerPosition
+				TouchInteractionState.PreviousPosition = CurrentPointerPosition
+				TouchInteractionState.CurrentPosition = CurrentPointerPosition
+				TouchInteractionState.GestureDistance = 0
+				TouchInteractionState.Scrolling = false
+				TouchInteractionState.ScrollTarget = Window:ResolveTouchScrollTarget(CurrentPointerPosition)
+			else
+				QueuedPrimaryClick = true
+			end
 			RefreshInterfaceCaptureState()
 		end
 	end)))
 
-	table.insert(Window._Connections, InputEndedSignalConnect(UserInputService.InputEnded, NewCClosure(function(Input, Processed)
-		if Input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+	table.insert(Window._Connections, InputChangedSignalConnect(UserInputService.InputChanged, NewCClosure(function(InputObject)
+		if InputObject.UserInputType ~= Enum.UserInputType.Touch or Window._Destroyed then
+			return
+		end
+
+		local TouchInteractionState = Window._TouchInteractionState
+		if TouchInteractionState.ActiveInputObject ~= InputObject then
+			return
+		end
+
+		local CurrentTouchPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
+		local PreviousTouchPosition = TouchInteractionState.PreviousPosition or CurrentTouchPosition
+		local TouchMovementDelta = CurrentTouchPosition - PreviousTouchPosition
+		TouchInteractionState.CurrentPosition = CurrentTouchPosition
+		TouchInteractionState.PreviousPosition = CurrentTouchPosition
+		Window._LastPointerPosition = CurrentTouchPosition
+
+		local TouchStartPosition = TouchInteractionState.StartPosition or CurrentTouchPosition
+		TouchInteractionState.GestureDistance = math.max(
+			TouchInteractionState.GestureDistance or 0,
+			(CurrentTouchPosition - TouchStartPosition).Magnitude
+		)
+		if TouchInteractionState.GestureDistance >= 9 then
+			TouchInteractionState.Scrolling = true
+			QueuedPrimaryClick = false
+		end
+
+		if TouchInteractionState.Scrolling then
+			Window:ApplyTouchMovement(TouchMovementDelta, TouchInteractionState.ScrollTarget)
+		end
+	end)))
+
+	table.insert(Window._Connections, InputEndedSignalConnect(UserInputService.InputEnded, NewCClosure(function(InputObject)
+		if InputObject.UserInputType == Enum.UserInputType.Touch then
+			local TouchInteractionState = Window._TouchInteractionState
+			if TouchInteractionState.ActiveInputObject ~= InputObject then
+				return
+			end
+
+			local FinalTouchPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
+			local TouchTarget = TouchInteractionState.ScrollTarget
+			local ShouldQueueTouchClick = not TouchInteractionState.Scrolling
+				and TouchTarget
+				and TouchTarget.Kind ~= "Title bar"
+				and TouchTarget.Kind ~= "Resize"
+			Window._LastPointerPosition = FinalTouchPosition
+			TouchInteractionState.ActiveInputObject = nil
+			TouchInteractionState.StartPosition = nil
+			TouchInteractionState.PreviousPosition = nil
+			TouchInteractionState.CurrentPosition = nil
+			TouchInteractionState.GestureDistance = 0
+			TouchInteractionState.Scrolling = false
+			TouchInteractionState.ScrollTarget = nil
+			ReleasePrimaryPointerCapture()
+
+			if ShouldQueueTouchClick and Window._Visible and Library._Visible then
+				UpdateHoverState(FinalTouchPosition)
+				QueuedPrimaryClick = true
+			end
+			return
+		end
+
+		if InputObject.UserInputType ~= Enum.UserInputType.MouseButton1 then
 			return
 		end
 
@@ -5969,13 +6461,17 @@ function Library:CreateWindow(WindowConfiguration)
 			or IsPointInsideRectangle(CurrentMousePosition, SinkTitlePosition, SinkTitleSize)
 		) or false
 		Window._MouseInWindow = MouseInWindow
-		if MouseInWindow ~= Window._ScrollSinkActive then
-			Window._ScrollSinkActive = MouseInWindow
-			Window:SetInputBlocking("Scroll", MouseInWindow)
+		local TouchPointerIsActive = Window._TouchInteractionState
+			and Window._TouchInteractionState.ActiveInputObject ~= nil
+		local PointerRequestsCapture = MouseInWindow
+			and (not Window._TouchInputAvailable or TouchPointerIsActive)
+		if PointerRequestsCapture ~= Window._ScrollSinkActive then
+			Window._ScrollSinkActive = PointerRequestsCapture
+			Window:SetInputBlocking("Scroll", PointerRequestsCapture)
 		end
-		if MouseInWindow ~= Window._CameraSinkActive then
-			Window._CameraSinkActive = MouseInWindow
-			Window:SetInputBlocking("Camera", MouseInWindow)
+		if PointerRequestsCapture ~= Window._CameraSinkActive then
+			Window._CameraSinkActive = PointerRequestsCapture
+			Window:SetInputBlocking("Camera", PointerRequestsCapture)
 		end
 		RefreshInterfaceCaptureState()
 		Window._TitleBarHovered = Window._Visible and IsPointInsideRectangle(CurrentMousePosition, SinkTitlePosition, SinkTitleSize) or false
@@ -6055,9 +6551,15 @@ function Library:CreateWindow(WindowConfiguration)
 
 	local HeartbeatConnection = HeartbeatSignalConnect(RunService.Heartbeat, NewCClosure(function(DeltaTime)
 		if Window._Destroyed then return end
+		if not Window._Visible and PrimaryMouseButtonHeld then
+			-- A keyboard hide or external visibility change can occur while a finger
+			-- is still down. Release the local capture immediately so the stale touch
+			-- cannot keep future interactions in a permanently held state.
+			ReleasePrimaryPointerCapture()
+		end
 
 		local DeltaSeconds = DeltaTime or 0.0167
-		local CurrentMousePosition = GetMouseLocation(UserInputService)
+		local CurrentMousePosition = Window:GetCurrentPointerPosition()
 		UpdateHoverState(CurrentMousePosition)
 
 		local AnimationChanged = Window._TooltipNeedsLayout == true
@@ -6247,7 +6749,11 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			if Window._CloseButtonHovered then
-				Window:Destroy()
+				if Window._TouchInputAvailable then
+					Window:SetVisible(false)
+				else
+					Window:Destroy()
+				end
 				return
 			end
 
@@ -6447,7 +6953,49 @@ function Library:CreateWindow(WindowConfiguration)
 
 	if UseImmediateMode and DrawingImmediateGetPaint then
 		local PaintConnection = DrawingImmediateGetPaint(1):Connect(NewCClosure(function()
-			if Window._Destroyed or not Library._Visible or not Window._Visible then return end
+			if Window._Destroyed then
+				return
+			end
+
+			if not Library._Visible or not Window._Visible then
+				if Window._TouchInputAvailable then
+					local LauncherGeometry = Window:GetTouchLauncherGeometry()
+					local LauncherTextSize = math.max(18, Theme.TitleFontSize)
+					local LauncherTextBounds = GetTextBounds("C", LauncherTextSize)
+					DrawImmediateSolidCircle(
+						LauncherGeometry.Center,
+						LauncherGeometry.Radius + 4,
+						Theme.WindowSurfaceShade,
+						0.35,
+						64
+					)
+					DrawImmediateSolidCircle(
+						LauncherGeometry.Center,
+						LauncherGeometry.Radius,
+						Theme.TouchLauncherBackground,
+						0.96,
+						64
+					)
+					DrawingImmediateCircle(
+						LauncherGeometry.Center,
+						LauncherGeometry.Radius,
+						Theme.TouchLauncherBorder,
+						0.95,
+						64,
+						2
+					)
+					DrawingImmediateText(
+						LauncherGeometry.Center - LauncherTextBounds / 2,
+						Theme.Font,
+						LauncherTextSize,
+						Theme.TouchLauncherText,
+						1,
+						"C",
+						false
+					)
+				end
+				return
+			end
 
 			local WindowPosition = Window._Position
 			local ViewportStart, ViewportEnd = GetWindowContentViewportYRange(Window, WindowPosition.Y)
@@ -6471,21 +7019,25 @@ function Library:CreateWindow(WindowConfiguration)
 				1.25
 			)
 
-			local CurrentMousePosition = GetMouseLocation(UserInputService)
+			local CurrentMousePosition = Window:GetCurrentPointerPosition()
 			local MouseInsideBody = IsPointInsideRectangle(CurrentMousePosition, BodyPosition, BodySize)
 
 			local TitleBarCheckPos = Vector2.new(WindowPosition.X, WindowPosition.Y)
 			local TitleBarCheckSize = Vector2.new(WindowWidth, Theme.TitleBarHeight)
 			local MouseInsideWindow = MouseInsideBody or IsPointInsideRectangle(CurrentMousePosition, TitleBarCheckPos, TitleBarCheckSize)
 			Window._MouseInWindow = MouseInsideWindow
-			if MouseInsideWindow ~= Window._ScrollSinkActive then
-				Window._ScrollSinkActive = MouseInsideWindow
-				Window:SetInputBlocking("Scroll", MouseInsideWindow)
+			local TouchPointerIsActive = Window._TouchInteractionState
+				and Window._TouchInteractionState.ActiveInputObject ~= nil
+			local PointerRequestsCapture = MouseInsideWindow
+				and (not Window._TouchInputAvailable or TouchPointerIsActive)
+			if PointerRequestsCapture ~= Window._ScrollSinkActive then
+				Window._ScrollSinkActive = PointerRequestsCapture
+				Window:SetInputBlocking("Scroll", PointerRequestsCapture)
 			end
 
-			if MouseInsideWindow ~= Window._CameraSinkActive then
-				Window._CameraSinkActive = MouseInsideWindow
-				Window:SetInputBlocking("Camera", MouseInsideWindow)
+			if PointerRequestsCapture ~= Window._CameraSinkActive then
+				Window._CameraSinkActive = PointerRequestsCapture
+				Window:SetInputBlocking("Camera", PointerRequestsCapture)
 			end
 			RefreshInterfaceCaptureState()
 
@@ -7355,7 +7907,7 @@ function Library:CreateWindow(WindowConfiguration)
 				)
 
 				local GridStartY = PopupPosition.Y + HeaderHeight + Margin
-				local ColorPickerMousePosition = GetMouseLocation(UserInputService)
+				local ColorPickerMousePosition = Window:GetCurrentPointerPosition()
 				for SwatchIndex = 1, #ColorPalette do
 					local ColumnIndex = (SwatchIndex - 1) % Columns
 					local RowIndex    = math.floor((SwatchIndex - 1) / Columns)
@@ -7470,11 +8022,15 @@ function Library:CreateWindow(WindowConfiguration)
 		-- of stretching past the viewport. The upper clamp prevents oversized
 		-- monitors from making text and controls feel inflated.
 		local RawScale = math.min(Viewport.X / 1920, Viewport.Y / 1080)
-		local Scale = math.clamp(RawScale, IsMobileDevice and 0.92 or 0.82, 1.35)
+		local MinimumScale = Window._TouchInputAvailable and 0.78 or 0.82
+		local Scale = math.clamp(RawScale, MinimumScale, 1.35)
+		Window._CurrentViewportScale = Scale
 
 		for ParameterKey, BaseValue in pairs(Theme.Base) do
 			Theme[ParameterKey] = BaseValue * Scale
 		end
+
+		Window:ApplyTouchViewportGeometry(Viewport, Scale, false)
 
 		Window._TabBarHeight = 34 * Scale
 		Window._VisibleHeight = Theme.WindowVisibleHeight
@@ -7483,10 +8039,20 @@ function Library:CreateWindow(WindowConfiguration)
 		-- mode change, or mobile rotation.
 		local MaximumPositionX = math.max(8, Viewport.X - Theme.WindowWidth - 8)
 		local MaximumPositionY = math.max(8, Viewport.Y - (Theme.TitleBarHeight + Window._VisibleHeight) - 8)
-		Window._Position = Vector2.new(
-			math.clamp(Window._Position.X, 8, MaximumPositionX),
-			math.clamp(Window._Position.Y, 8, MaximumPositionY)
-		)
+		if Window._TouchInputAvailable and not Window._ViewportScaleInitialized then
+			Window._Position = Vector2.new(
+				math.max(8, (Viewport.X - Theme.WindowWidth) / 2),
+				math.max(8, (Viewport.Y - Theme.TitleBarHeight - Window._VisibleHeight) / 2)
+			)
+		else
+			Window._Position = Vector2.new(
+				math.clamp(Window._Position.X, 8, MaximumPositionX),
+				math.clamp(Window._Position.Y, 8, MaximumPositionY)
+			)
+		end
+
+		Window._ViewportScaleInitialized = true
+		Window:UpdateTouchLauncherDrawings()
 	end
 
 	local ViewportConnection
@@ -7516,6 +8082,9 @@ function Library:CreateWindow(WindowConfiguration)
 	UpdateViewportScale()
 
 	Window:RecalculateLayout()
+	if Window._TouchInputAvailable then
+		Window:SetInputBlocking("TouchInterface", true)
+	end
 
 	return Window
 end
@@ -7601,6 +8170,40 @@ function Library:SetInputBlocking(Type, Enabled)
 				end
 				return Enum.ContextActionResult.Sink
 			end, false, Priority, Enum.UserInputType.MouseWheel)
+		elseif Type == "TouchInterface" then
+			BindCoreActionAtPriority(ContextActionService, NewName, function(ActionName, InputState, InputObject)
+				if not InputObject or InputObject.UserInputType ~= Enum.UserInputType.Touch then
+					return Enum.ContextActionResult.Pass
+				end
+
+				local PointerPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
+				for RequestedWindow, RequestTable in pairs(Library._InputBlockingRequests) do
+					if RequestTable.TouchInterface and RequestedWindow and not RequestedWindow._Destroyed then
+						local TouchInteractionState = RequestedWindow._TouchInteractionState
+						if TouchInteractionState and TouchInteractionState.ActiveInputObject == InputObject then
+							return Enum.ContextActionResult.Sink
+						end
+
+						if RequestedWindow._Visible and Library._Visible then
+							local TitlePosition = RequestedWindow._Position
+							local TitleSize = Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight)
+							local BodyPosition = TitlePosition + Vector2.new(0, Theme.TitleBarHeight)
+							local BodySize = Vector2.new(Theme.WindowWidth, RequestedWindow._VisibleHeight)
+							if IsPointInsideRectangle(PointerPosition, TitlePosition, TitleSize)
+								or IsPointInsideRectangle(PointerPosition, BodyPosition, BodySize)
+							then
+								return Enum.ContextActionResult.Sink
+							end
+						elseif RequestedWindow.IsPointInsideTouchLauncher
+							and RequestedWindow:IsPointInsideTouchLauncher(PointerPosition)
+						then
+							return Enum.ContextActionResult.Sink
+						end
+					end
+				end
+
+				return Enum.ContextActionResult.Pass
+			end, false, Priority, Enum.UserInputType.Touch)
 		elseif Type == "Interface" then
 			BindCoreActionAtPriority(ContextActionService, NewName, function(ActionName, InputState, InputObject)
 				if InputObject and InputObject.UserInputType == Enum.UserInputType.MouseWheel then

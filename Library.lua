@@ -1107,6 +1107,18 @@ local function GetWindowContentViewportHeight(Window)
 	return math.max(Theme.ElementHeight, ViewportEnd - ViewportStart)
 end
 
+local function GetWindowResizeGripHitSize(Window)
+	-- The decorative corner remains intentionally compact, but a finger needs a
+	-- substantially larger invisible target than a mouse cursor. Keeping the
+	-- target inside the window prevents it from stealing touches from nearby
+	-- Roblox controls while still meeting a comfortable mobile touch size.
+	if Window and Window._TouchInputAvailable then
+		return math.max(48, Theme.ElementHeight * 1.2)
+	end
+
+	return math.max(18, Theme.InnerMargin)
+end
+
 local function GetMainScrollbarGeometry(Window, WindowPosition)
 	if Window._MaxScroll <= 0 then
 		return nil
@@ -2345,7 +2357,7 @@ function Library:CreateWindow(WindowConfiguration)
 	-- The versioned profile intentionally invalidates geometry saved by the older
 	-- oversized touch layout. ApplyTouchViewportGeometry replaces this temporary
 	-- value with its orientation-specific profile before configuration is restored.
-	Window._DeviceProfile = TouchInputAvailable and "Responsive touch pending version 2" or "Desktop"
+	Window._DeviceProfile = TouchInputAvailable and "Responsive touch pending version 3" or "Desktop"
 	Window._UseSingleColumnLayout = false
 	Window._TouchLayoutWasPortrait = nil
 	Window._ViewportScaleInitialized = false
@@ -2361,6 +2373,8 @@ function Library:CreateWindow(WindowConfiguration)
 		StartPosition = nil,
 		PreviousPosition = nil,
 		CurrentPosition = nil,
+		StartWindowPosition = nil,
+		StartWindowSize = nil,
 		GestureDistance = 0,
 		Scrolling = false,
 		ScrollTarget = nil,
@@ -2733,8 +2747,8 @@ function Library:CreateWindow(WindowConfiguration)
 		Window._TouchLayoutWasPortrait = PortraitLayout
 		Window._UseSingleColumnLayout = PortraitLayout or ViewportSize.X <= 760
 		Window._DeviceProfile = PortraitLayout
-			and "Responsive touch portrait version 2"
-			or "Responsive touch landscape version 2"
+			and "Responsive touch portrait version 3"
+			or "Responsive touch landscape version 3"
 
 		if (ShouldResetResponsiveBase or TouchOrientationChanged) and Window._InitialResponsiveBaseGeometry then
 			-- Restore the original touch dimensions before recomputing the responsive
@@ -4058,18 +4072,20 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			if Window._ResizeGripLines then
-				local ResizeGripCornerInset = 5
+				local ResizeGripCornerInset = Window._TouchInputAvailable and 7 or 5
+				local ResizeGripLineSpacing = Window._TouchInputAvailable and 6 or 4
 				local ResizeGripCornerPosition = Vector2.new(
 					WindowPosition.X + Theme.WindowWidth - ResizeGripCornerInset,
 					WindowPosition.Y + Theme.TitleBarHeight + Window._VisibleHeight - ResizeGripCornerInset
 				)
 				local ResizeGripColor = Window._ResizeGripHovered and Theme.TitleBarTextHover or Theme.TitleBarSeparator
 				for ResizeGripLineIndex, ResizeGripLineObject in ipairs(Window._ResizeGripLines) do
-					local ResizeGripOffset = ResizeGripLineIndex * 4
+					local ResizeGripOffset = ResizeGripLineIndex * ResizeGripLineSpacing
 					ApplyDrawingProperties(ResizeGripLineObject, {
 						From = ResizeGripCornerPosition - Vector2.new(ResizeGripOffset, 0),
 						To = ResizeGripCornerPosition - Vector2.new(0, ResizeGripOffset),
 						Color = ResizeGripColor,
+						Thickness = Window._TouchInputAvailable and 2 or 1.35,
 						Transparency = Window._ResizeGripHovered and 0.9 or 0.42,
 						Visible = Window._Visible,
 					})
@@ -4077,7 +4093,7 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 		end
 
-		local CloseButtonSize = 24
+		local CloseButtonSize = Window._TouchInputAvailable and math.max(32, Theme.ElementHeight) or 24
 		local CloseButtonPosX = WindowPosition.X + Theme.WindowWidth - CloseButtonSize - 10
 		local CloseButtonPosY = WindowPosition.Y + (Theme.TitleBarHeight - CloseButtonSize) / 2
 		Window._CloseButtonRegion = {
@@ -4085,7 +4101,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Size = Vector2.new(CloseButtonSize, CloseButtonSize)
 		}
 
-		local SearchButtonSize = 24
+		local SearchButtonSize = CloseButtonSize
 		local SearchButtonPosX = CloseButtonPosX - SearchButtonSize - 8
 		local SearchButtonPosY = CloseButtonPosY
 		Window._SearchButtonRegion = {
@@ -4095,7 +4111,8 @@ function Library:CreateWindow(WindowConfiguration)
 
 		if not UseImmediateMode then
 			if Window._SearchIconCircle and Window._SearchIconLine then
-				local CenterPoint = Window._SearchButtonRegion.Position + Vector2.new(11, 11)
+				local SearchButtonCenterOffset = Window._SearchButtonRegion.Size / 2
+				local CenterPoint = Window._SearchButtonRegion.Position + SearchButtonCenterOffset
 				local MouseIsOverSearch = IsPointInsideRectangle(Window:GetCurrentPointerPosition(), Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
 				local SearchIconColor = Window._SearchActive and Theme.TitleBarSeparator or (MouseIsOverSearch and Theme.TitleBarTextHover or Theme.TitleBarText)
 
@@ -4389,6 +4406,65 @@ function Library:CreateWindow(WindowConfiguration)
 
 	end
 
+	function Window:SetActivePage(PageIndex)
+		-- Every navigation path enters through this method so mouse clicks, touch
+		-- taps, search results, and future programmatic navigation all reset the
+		-- same page-local scroll state and visibility graph.
+		local NumericPageIndex = tonumber(PageIndex)
+		if not NumericPageIndex or NumericPageIndex % 1 ~= 0 or not Window._Pages[NumericPageIndex] then
+			return false
+		end
+
+		if NumericPageIndex == Window._ActivePageIndex then
+			return true
+		end
+
+		Window._ActivePageIndex = NumericPageIndex
+		Window._ScrollOffset = 0
+		UpdateElementsVisibility()
+		Window:RecalculateLayout()
+		return true
+	end
+
+	function Window:GetPageTabIndexAtPosition(PointerPosition)
+		if typeof(PointerPosition) ~= "Vector2" or Window._TabBarHeight <= 0 then
+			return nil
+		end
+
+		local TabLayout = GetPageTabLayout(Window, Theme.WindowWidth)
+		local TabVerticalInset = Window._TouchInputAvailable and 1 or 5
+		local TabHeight = math.max(
+			1,
+			Window._TabBarHeight - TabVerticalInset * 2
+		)
+		local TabPositionY = Window._Position.Y + Theme.TitleBarHeight + TabVerticalInset
+
+		for PageIndex = 1, #Window._Pages do
+			local TabWidth = TabLayout.Widths[PageIndex]
+			local TabPositionX = Window._Position.X
+				+ TabLayout.Padding
+				+ TabLayout.Offsets[PageIndex]
+				- (Window._TabScrollOffset or 0)
+			local TabIsFullyVisible = Library:IsPageTabFullyInsideViewport(
+				TabLayout,
+				Window._Position.X,
+				Theme.WindowWidth,
+				TabPositionX,
+				TabWidth
+			)
+
+			if TabIsFullyVisible and IsPointInsideRectangle(
+				PointerPosition,
+				Vector2.new(TabPositionX, TabPositionY),
+				Vector2.new(TabWidth, TabHeight)
+			) then
+				return PageIndex
+			end
+		end
+
+		return nil
+	end
+
 	local function SetEntireWindowVisibility(IsVisible)
 		if UseImmediateMode then
 			Window._Visible = IsVisible
@@ -4421,6 +4497,8 @@ function Library:CreateWindow(WindowConfiguration)
 				TouchInteractionState.StartPosition = nil
 				TouchInteractionState.PreviousPosition = nil
 				TouchInteractionState.CurrentPosition = nil
+				TouchInteractionState.StartWindowPosition = nil
+				TouchInteractionState.StartWindowSize = nil
 				TouchInteractionState.GestureDistance = 0
 				TouchInteractionState.Scrolling = false
 				TouchInteractionState.ScrollTarget = nil
@@ -5749,6 +5827,7 @@ function Library:CreateWindow(WindowConfiguration)
 	local PreviousMouseButtonState = false
 	local PreviousSecondaryMouseButtonState = false
 	local QueuedPrimaryClick = false
+	local QueuedPrimaryClickPosition = nil
 	local PrimaryMouseButtonHeld = false
 
 	local WindowHasFocus = true
@@ -6047,10 +6126,27 @@ function Library:CreateWindow(WindowConfiguration)
 		-- moves the complete window. The resize corner receives the same direct
 		-- manipulation treatment so touch users do not need a tiny scrollbar-like
 		-- gesture to change the window size.
-		if IsPointInsideRectangle(PointerPosition, Window._CloseButtonRegion.Position, Window._CloseButtonRegion.Size)
-			or IsPointInsideRectangle(PointerPosition, Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
-		then
-			return { Kind = "Control" }
+		if Window._CloseButtonRegion and IsPointInsideRectangle(
+			PointerPosition,
+			Window._CloseButtonRegion.Position,
+			Window._CloseButtonRegion.Size
+		) then
+			return {
+				Kind = "Control",
+				ControlName = "Close",
+				Region = Window._CloseButtonRegion,
+			}
+		end
+		if Window._SearchButtonRegion and IsPointInsideRectangle(
+			PointerPosition,
+			Window._SearchButtonRegion.Position,
+			Window._SearchButtonRegion.Size
+		) then
+			return {
+				Kind = "Control",
+				ControlName = "Search",
+				Region = Window._SearchButtonRegion,
+			}
 		end
 		if IsPointInsideRectangle(PointerPosition, Window._ResizeGripRegion.Position, Window._ResizeGripRegion.Size) then
 			return { Kind = "Resize" }
@@ -6065,7 +6161,10 @@ function Library:CreateWindow(WindowConfiguration)
 		local TabBarPosition = Window._Position + Vector2.new(0, Theme.TitleBarHeight)
 		local TabBarSize = Vector2.new(Theme.WindowWidth, Window._TabBarHeight)
 		if Window._TabBarHeight > 0 and IsPointInsideRectangle(PointerPosition, TabBarPosition, TabBarSize) then
-			return { Kind = "Tabs" }
+			return {
+				Kind = "Tabs",
+				PageIndex = Window:GetPageTabIndexAtPosition(PointerPosition),
+			}
 		end
 
 		local ActiveDropdown = Window._ActiveDropdown
@@ -6094,15 +6193,21 @@ function Library:CreateWindow(WindowConfiguration)
 		return { Kind = "Window" }
 	end
 
-	function Window:ApplyTouchMovement(MovementDelta, TouchTarget)
+	function Window:ApplyTouchMovement(MovementDelta, TotalMovementDelta, TouchTarget)
 		if not TouchTarget then
 			return
 		end
 
 		if TouchTarget.Kind == "Title bar" then
-			Window._Position = ClampWindowPosition(Window._Position + MovementDelta)
+			local StartWindowPosition = Window._TouchInteractionState.StartWindowPosition or Window._Position
+			Window._Position = ClampWindowPosition(StartWindowPosition + TotalMovementDelta)
 		elseif TouchTarget.Kind == "Resize" then
-			ApplyWindowSize(Theme.WindowWidth + MovementDelta.X, Window._VisibleHeight + MovementDelta.Y)
+			local StartWindowSize = Window._TouchInteractionState.StartWindowSize
+				or Vector2.new(Theme.WindowWidth, Window._VisibleHeight)
+			ApplyWindowSize(
+				StartWindowSize.X + TotalMovementDelta.X,
+				StartWindowSize.Y + TotalMovementDelta.Y
+			)
 		elseif TouchTarget.Kind == "Tabs" then
 			local TabLayout = GetPageTabLayout(Window, Theme.WindowWidth)
 			Window._TabScrollOffset = math.clamp(
@@ -6154,6 +6259,189 @@ function Library:CreateWindow(WindowConfiguration)
 		WindowHasFocus = true
 	end)))
 
+	function Window:ProcessTouchInput(InputState, InputObject)
+		-- ContextActionService is the authoritative mobile path because it continues
+		-- receiving touches while Roblox CoreGui is open. UserInputService also calls
+		-- this method as an idempotent compatibility path for executors that omit a
+		-- ContextActionService Change or End state.
+		if Window._Destroyed or not InputObject or InputObject.UserInputType ~= Enum.UserInputType.Touch then
+			return false
+		end
+
+		local TouchInteractionState = Window._TouchInteractionState
+		local PointerPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
+
+		if InputState == Enum.UserInputState.Begin then
+			-- One window interaction owns one finger. Additional fingers pass through
+			-- to the game so a camera or movement gesture is not accidentally captured.
+			if TouchInteractionState.ActiveInputObject then
+				return TouchInteractionState.ActiveInputObject == InputObject
+			end
+
+			Window._LastPointerPosition = PointerPosition
+			if not Window._Visible or not Library._Visible then
+				if Window:IsPointInsideTouchLauncher(PointerPosition) then
+					Library._Visible = true
+					Window:SetVisible(true)
+					Window:RecalculateLayout()
+					return true
+				end
+				return false
+			end
+
+			UpdateHoverState(PointerPosition)
+			if not Window._MouseInWindow then
+				return false
+			end
+
+			PrimaryMouseButtonHeld = true
+			PreviousMouseButtonState = true
+			TouchInteractionState.ActiveInputObject = InputObject
+			TouchInteractionState.StartPosition = PointerPosition
+			TouchInteractionState.PreviousPosition = PointerPosition
+			TouchInteractionState.CurrentPosition = PointerPosition
+			TouchInteractionState.StartWindowPosition = Window._Position
+			TouchInteractionState.StartWindowSize = Vector2.new(Theme.WindowWidth, Window._VisibleHeight)
+			TouchInteractionState.GestureDistance = 0
+			TouchInteractionState.Scrolling = false
+			TouchInteractionState.ScrollTarget = Window:ResolveTouchScrollTarget(PointerPosition)
+			QueuedPrimaryClick = false
+			QueuedPrimaryClickPosition = nil
+			RefreshInterfaceCaptureState()
+			return true
+		end
+
+		if TouchInteractionState.ActiveInputObject ~= InputObject then
+			return false
+		end
+
+		if InputState == Enum.UserInputState.Change then
+			local PreviousPointerPosition = TouchInteractionState.PreviousPosition or PointerPosition
+			local StartPointerPosition = TouchInteractionState.StartPosition or PointerPosition
+			local MovementDelta = PointerPosition - PreviousPointerPosition
+			local TotalMovementDelta = PointerPosition - StartPointerPosition
+			local TouchTarget = TouchInteractionState.ScrollTarget
+			TouchInteractionState.CurrentPosition = PointerPosition
+			TouchInteractionState.PreviousPosition = PointerPosition
+			TouchInteractionState.GestureDistance = math.max(
+				TouchInteractionState.GestureDistance or 0,
+				TotalMovementDelta.Magnitude
+			)
+			Window._LastPointerPosition = PointerPosition
+
+			local GestureActivationDistance = math.clamp(Theme.ElementHeight * 0.42, 14, 22)
+			local GestureWasActive = TouchInteractionState.Scrolling == true
+			if not GestureWasActive and TouchTarget then
+				local HorizontalDistance = math.abs(TotalMovementDelta.X)
+				local VerticalDistance = math.abs(TotalMovementDelta.Y)
+				if TouchTarget.Kind == "Tabs" then
+					TouchInteractionState.Scrolling = HorizontalDistance >= GestureActivationDistance
+						and HorizontalDistance >= VerticalDistance
+					if not TouchInteractionState.Scrolling
+						and TotalMovementDelta.Magnitude >= GestureActivationDistance * 1.5
+					then
+						-- A large vertical departure from the tab bar cancels the tap without
+						-- turning it into an unrelated page-scroll gesture.
+						TouchInteractionState.Scrolling = true
+					end
+				elseif TouchTarget.Kind == "Window"
+					or TouchTarget.Kind == "Section"
+					or TouchTarget.Kind == "Dropdown"
+				then
+					TouchInteractionState.Scrolling = VerticalDistance >= GestureActivationDistance
+						and VerticalDistance >= HorizontalDistance * 0.65
+				elseif TouchTarget.Kind == "Control" then
+					TouchInteractionState.Scrolling = TotalMovementDelta.Magnitude >= GestureActivationDistance
+				else
+					TouchInteractionState.Scrolling = TotalMovementDelta.Magnitude >= GestureActivationDistance
+				end
+			end
+
+			if TouchInteractionState.Scrolling then
+				QueuedPrimaryClick = false
+				QueuedPrimaryClickPosition = nil
+				if TouchTarget and TouchTarget.Kind == "Title bar" then
+					Window._Dragging = true
+					Window._DragOffset = StartPointerPosition - TouchInteractionState.StartWindowPosition
+				elseif TouchTarget and TouchTarget.Kind == "Resize" then
+					Window._Resizing = true
+					Window._ResizeStartMousePosition = StartPointerPosition
+					Window._ResizeStartSize = TouchInteractionState.StartWindowSize
+				end
+
+				local AppliedMovementDelta = GestureWasActive and MovementDelta or TotalMovementDelta
+				Window:ApplyTouchMovement(AppliedMovementDelta, TotalMovementDelta, TouchTarget)
+			end
+
+			RefreshInterfaceCaptureState()
+			return true
+		end
+
+		if InputState ~= Enum.UserInputState.End and InputState ~= Enum.UserInputState.Cancel then
+			return true
+		end
+
+		-- Some Android builds report an already-reset Position on End. The latest
+		-- Change position is therefore authoritative, falling back to Begin when the
+		-- finger never moved.
+		local FinalPointerPosition = TouchInteractionState.CurrentPosition
+			or TouchInteractionState.StartPosition
+			or PointerPosition
+		local TouchTarget = TouchInteractionState.ScrollTarget
+		local ShouldActivateTap = InputState == Enum.UserInputState.End
+			and not TouchInteractionState.Scrolling
+		Window._LastPointerPosition = FinalPointerPosition
+
+		TouchInteractionState.ActiveInputObject = nil
+		TouchInteractionState.StartPosition = nil
+		TouchInteractionState.PreviousPosition = nil
+		TouchInteractionState.CurrentPosition = nil
+		TouchInteractionState.StartWindowPosition = nil
+		TouchInteractionState.StartWindowSize = nil
+		TouchInteractionState.GestureDistance = 0
+		TouchInteractionState.Scrolling = false
+		TouchInteractionState.ScrollTarget = nil
+		ReleasePrimaryPointerCapture()
+
+		if not ShouldActivateTap or not Window._Visible or not Library._Visible or not TouchTarget then
+			return true
+		end
+
+		if TouchTarget.Kind == "Tabs" then
+			local ReleasedPageIndex = Window:GetPageTabIndexAtPosition(FinalPointerPosition)
+			if TouchTarget.PageIndex and ReleasedPageIndex == TouchTarget.PageIndex then
+				Window:SetActivePage(TouchTarget.PageIndex)
+			end
+			return true
+		elseif TouchTarget.Kind == "Control" then
+			local ReleasedInsideControl = TouchTarget.Region and IsPointInsideRectangle(
+				FinalPointerPosition,
+				TouchTarget.Region.Position,
+				TouchTarget.Region.Size
+			)
+			if not ReleasedInsideControl then
+				return true
+			end
+
+			if TouchTarget.ControlName == "Close" then
+				Window:SetVisible(false)
+			elseif TouchTarget.ControlName == "Search" then
+				SetSearchActive(not Window._SearchActive, true)
+				Window:RecalculateLayout()
+			end
+			return true
+		elseif TouchTarget.Kind == "Title bar" or TouchTarget.Kind == "Resize" then
+			return true
+		end
+
+		-- Ordinary elements continue through the shared primary-click dispatcher so
+		-- toggles, dropdowns, sliders, and text boxes retain identical mouse logic.
+		UpdateHoverState(FinalPointerPosition)
+		QueuedPrimaryClickPosition = FinalPointerPosition
+		QueuedPrimaryClick = true
+		return true
+	end
+
 	table.insert(Window._Connections, InputBeganSignalConnect(UserInputService.InputBegan, NewCClosure(function(InputObject)
 		if Window._Destroyed then
 			return
@@ -6164,23 +6452,13 @@ function Library:CreateWindow(WindowConfiguration)
 		if InputType ~= Enum.UserInputType.MouseButton1 and not IsTouchPointer then
 			return
 		end
-
-		local CurrentPointerPosition = IsTouchPointer
-			and Vector2.new(InputObject.Position.X, InputObject.Position.Y)
-			or GetMouseLocation(UserInputService)
-		Window._LastPointerPosition = CurrentPointerPosition
-
-		-- Closing a touch window only hides it. Tapping the centered launcher is
-		-- handled before normal visibility guards so the interface can always be
-		-- recovered without a keyboard shortcut.
-		if IsTouchPointer and (not Window._Visible or not Library._Visible) then
-			if Window:IsPointInsideTouchLauncher(CurrentPointerPosition) then
-				Library._Visible = true
-				Window:SetVisible(true)
-				Window:RecalculateLayout()
-			end
+		if IsTouchPointer then
+			Window:ProcessTouchInput(Enum.UserInputState.Begin, InputObject)
 			return
 		end
+
+		local CurrentPointerPosition = GetMouseLocation(UserInputService)
+		Window._LastPointerPosition = CurrentPointerPosition
 
 		if not Window._Visible or not Library._Visible then
 			return
@@ -6194,18 +6472,8 @@ function Library:CreateWindow(WindowConfiguration)
 		if Window._MouseInWindow then
 			PrimaryMouseButtonHeld = true
 			PreviousMouseButtonState = true
-			if IsTouchPointer then
-				local TouchInteractionState = Window._TouchInteractionState
-				TouchInteractionState.ActiveInputObject = InputObject
-				TouchInteractionState.StartPosition = CurrentPointerPosition
-				TouchInteractionState.PreviousPosition = CurrentPointerPosition
-				TouchInteractionState.CurrentPosition = CurrentPointerPosition
-				TouchInteractionState.GestureDistance = 0
-				TouchInteractionState.Scrolling = false
-				TouchInteractionState.ScrollTarget = Window:ResolveTouchScrollTarget(CurrentPointerPosition)
-			else
-				QueuedPrimaryClick = true
-			end
+			QueuedPrimaryClickPosition = CurrentPointerPosition
+			QueuedPrimaryClick = true
 			RefreshInterfaceCaptureState()
 		end
 	end)))
@@ -6215,60 +6483,12 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
-		local TouchInteractionState = Window._TouchInteractionState
-		if TouchInteractionState.ActiveInputObject ~= InputObject then
-			return
-		end
-
-		local CurrentTouchPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
-		local PreviousTouchPosition = TouchInteractionState.PreviousPosition or CurrentTouchPosition
-		local TouchMovementDelta = CurrentTouchPosition - PreviousTouchPosition
-		TouchInteractionState.CurrentPosition = CurrentTouchPosition
-		TouchInteractionState.PreviousPosition = CurrentTouchPosition
-		Window._LastPointerPosition = CurrentTouchPosition
-
-		local TouchStartPosition = TouchInteractionState.StartPosition or CurrentTouchPosition
-		TouchInteractionState.GestureDistance = math.max(
-			TouchInteractionState.GestureDistance or 0,
-			(CurrentTouchPosition - TouchStartPosition).Magnitude
-		)
-		if TouchInteractionState.GestureDistance >= 9 then
-			TouchInteractionState.Scrolling = true
-			QueuedPrimaryClick = false
-		end
-
-		if TouchInteractionState.Scrolling then
-			Window:ApplyTouchMovement(TouchMovementDelta, TouchInteractionState.ScrollTarget)
-		end
+		Window:ProcessTouchInput(Enum.UserInputState.Change, InputObject)
 	end)))
 
 	table.insert(Window._Connections, InputEndedSignalConnect(UserInputService.InputEnded, NewCClosure(function(InputObject)
 		if InputObject.UserInputType == Enum.UserInputType.Touch then
-			local TouchInteractionState = Window._TouchInteractionState
-			if TouchInteractionState.ActiveInputObject ~= InputObject then
-				return
-			end
-
-			local FinalTouchPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
-			local TouchTarget = TouchInteractionState.ScrollTarget
-			local ShouldQueueTouchClick = not TouchInteractionState.Scrolling
-				and TouchTarget
-				and TouchTarget.Kind ~= "Title bar"
-				and TouchTarget.Kind ~= "Resize"
-			Window._LastPointerPosition = FinalTouchPosition
-			TouchInteractionState.ActiveInputObject = nil
-			TouchInteractionState.StartPosition = nil
-			TouchInteractionState.PreviousPosition = nil
-			TouchInteractionState.CurrentPosition = nil
-			TouchInteractionState.GestureDistance = 0
-			TouchInteractionState.Scrolling = false
-			TouchInteractionState.ScrollTarget = nil
-			ReleasePrimaryPointerCapture()
-
-			if ShouldQueueTouchClick and Window._Visible and Library._Visible then
-				UpdateHoverState(FinalTouchPosition)
-				QueuedPrimaryClick = true
-			end
+			Window:ProcessTouchInput(Enum.UserInputState.End, InputObject)
 			return
 		end
 
@@ -6335,26 +6555,9 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 		end
 
-		local TabLayout = GetPageTabLayout(Window, Theme.WindowWidth)
+		local HoveredPageIndex = Window:GetPageTabIndexAtPosition(CurrentMousePosition)
 		for PageIndex, Page in ipairs(Window._Pages) do
-			Page._IsHovered = false
-			if Window._TabBarHeight > 0 then
-				local TabWidth = TabLayout.Widths[PageIndex]
-				local TabX = Window._Position.X + TabLayout.Padding + TabLayout.Offsets[PageIndex] - (Window._TabScrollOffset or 0)
-				local TabY = Window._Position.Y + Theme.TitleBarHeight + 5
-				local TabIsFullyVisible = Library:IsPageTabFullyInsideViewport(
-					TabLayout,
-					Window._Position.X,
-					Theme.WindowWidth,
-					TabX,
-					TabWidth
-				)
-				Page._IsHovered = TabIsFullyVisible and IsPointInsideRectangle(
-					CurrentMousePosition,
-					Vector2.new(TabX, TabY),
-					Vector2.new(TabWidth, Window._TabBarHeight - 10)
-				)
-			end
+			Page._IsHovered = PageIndex == HoveredPageIndex
 		end
 
 		if Window._SearchButtonRegion then
@@ -6535,7 +6738,7 @@ function Library:CreateWindow(WindowConfiguration)
 		RefreshInterfaceCaptureState()
 		Window._TitleBarHovered = Window._Visible and IsPointInsideRectangle(CurrentMousePosition, SinkTitlePosition, SinkTitleSize) or false
 
-		local ResizeGripSize = math.max(18, Theme.InnerMargin)
+		local ResizeGripSize = GetWindowResizeGripHitSize(Window)
 		local ResizeGripPosition = Vector2.new(
 			Window._Position.X + Theme.WindowWidth - ResizeGripSize,
 			Window._Position.Y + Theme.TitleBarHeight + Window._VisibleHeight - ResizeGripSize
@@ -6618,7 +6821,10 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		local DeltaSeconds = DeltaTime or 0.0167
-		local CurrentMousePosition = Window:GetCurrentPointerPosition()
+		local CurrentMousePosition = QueuedPrimaryClickPosition or Window:GetCurrentPointerPosition()
+		if QueuedPrimaryClickPosition then
+			Window._LastPointerPosition = QueuedPrimaryClickPosition
+		end
 		UpdateHoverState(CurrentMousePosition)
 
 		local AnimationChanged = Window._TooltipNeedsLayout == true
@@ -6695,6 +6901,7 @@ function Library:CreateWindow(WindowConfiguration)
 		local MouseButtonJustReleased = not IsPrimaryMouseButtonDown and PreviousMouseButtonState
 		local ShouldProcessPrimaryClick = QueuedPrimaryClick or MouseButtonJustPressed
 		QueuedPrimaryClick = false
+		QueuedPrimaryClickPosition = nil
 
 		local SecondaryMouseButtonDown = false
 		local PressedButtons = GetMouseButtonsPressed(UserInputService)
@@ -6732,7 +6939,7 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		if Window._Dragging and IsPrimaryMouseButtonDown and Window._DragOffset then
-			Window._Position = CurrentMousePosition - Window._DragOffset
+			Window._Position = ClampWindowPosition(CurrentMousePosition - Window._DragOffset)
 			Window:RecalculateLayout()
 		end
 
@@ -6772,9 +6979,7 @@ function Library:CreateWindow(WindowConfiguration)
 						local TargetElement = MatchedItem.Element
 
 						if TargetSection._PageIndex and TargetSection._PageIndex ~= Window._ActivePageIndex then
-							Window._ActivePageIndex = TargetSection._PageIndex
-							Window._ScrollOffset = 0
-							UpdateElementsVisibility()
+							Window:SetActivePage(TargetSection._PageIndex)
 						end
 
 						local TargetScroll = TargetSection._PositionY - Theme.TitleBarHeight - 10
@@ -6849,12 +7054,7 @@ function Library:CreateWindow(WindowConfiguration)
 			if Window._TabBarHeight > 0 then
 				for PageIndex, Page in ipairs(Window._Pages) do
 					if Page._IsHovered then
-						if PageIndex ~= Window._ActivePageIndex then
-							Window._ActivePageIndex = PageIndex
-							Window._ScrollOffset = 0
-							UpdateElementsVisibility()
-							Window:RecalculateLayout()
-						end
+						Window:SetActivePage(PageIndex)
 						return
 					end
 				end
@@ -7105,7 +7305,7 @@ function Library:CreateWindow(WindowConfiguration)
 			DrawingImmediateFilledRectangle(WindowPosition, Vector2.new(WindowWidth, math.max(6, Theme.TitleBarHeight * 0.45)), Theme.TitleBarHighlight, 0.32, 0)
 			DrawingImmediateFilledRectangle(WindowPosition, Vector2.new(WindowWidth * 0.58, Theme.TitleBarHeight), Theme.TitleBarAccentWash, 0.34, 0)
 			Window._TitleBarHovered = IsPointInsideRectangle(CurrentMousePosition, WindowPosition, TitleBarSize)
-			local ResizeGripSize = math.max(18, Theme.InnerMargin)
+			local ResizeGripSize = GetWindowResizeGripHitSize(Window)
 			Window._ResizeGripRegion = {
 				Position = Vector2.new(WindowPosition.X + WindowWidth - ResizeGripSize, WindowPosition.Y + Theme.TitleBarHeight + ContentHeight - ResizeGripSize),
 				Size = Vector2.new(ResizeGripSize, ResizeGripSize)
@@ -7230,7 +7430,7 @@ function Library:CreateWindow(WindowConfiguration)
 			if Window._SearchButtonRegion then
 				local MouseIsOverSearch = IsPointInsideRectangle(CurrentMousePosition, Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
 				local SearchIconColor = Window._SearchActive and Theme.TitleBarSeparator or (MouseIsOverSearch and Theme.TitleBarTextHover or Theme.TitleBarText)
-				local SearchIconCenter = Window._SearchButtonRegion.Position + Vector2.new(11, 11)
+				local SearchIconCenter = Window._SearchButtonRegion.Position + Window._SearchButtonRegion.Size / 2
 
 				DrawingImmediateCircle(SearchIconCenter, 4.5, SearchIconColor, 1, 48, 1)
 				DrawingImmediateLine(SearchIconCenter + Vector2.new(3, 3), SearchIconCenter + Vector2.new(8, 8), SearchIconColor, 1, 1.5)
@@ -7763,20 +7963,21 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 			end
 
-			local ResizeGripCornerInset = 5
+			local ResizeGripCornerInset = Window._TouchInputAvailable and 7 or 5
+			local ResizeGripLineSpacing = Window._TouchInputAvailable and 6 or 4
 			local ResizeGripCornerPosition = Vector2.new(
 				WindowPosition.X + WindowWidth - ResizeGripCornerInset,
 				WindowPosition.Y + Theme.TitleBarHeight + ContentHeight - ResizeGripCornerInset
 			)
 			local ResizeGripColor = Window._ResizeGripHovered and Theme.TitleBarTextHover or Theme.TitleBarSeparator
 			for ResizeGripLineIndex = 1, 3 do
-				local ResizeGripOffset = ResizeGripLineIndex * 4
+				local ResizeGripOffset = ResizeGripLineIndex * ResizeGripLineSpacing
 				DrawingImmediateLine(
 					ResizeGripCornerPosition - Vector2.new(ResizeGripOffset, 0),
 					ResizeGripCornerPosition - Vector2.new(0, ResizeGripOffset),
 					ResizeGripColor,
 					Window._ResizeGripHovered and 0.9 or 0.42,
-					1.35
+					Window._TouchInputAvailable and 2 or 1.35
 				)
 			end
 
@@ -8245,6 +8446,21 @@ function Library:SetInputBlocking(Type, Enabled)
 				local PointerPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
 				for RequestedWindow, RequestTable in pairs(Library._InputBlockingRequests) do
 					if RequestTable.TouchInterface and RequestedWindow and not RequestedWindow._Destroyed then
+						-- Route the touch through the same high-priority action that blocks
+						-- CoreGui. Merely sinking here and waiting for UserInputService made
+						-- taps unreliable on Android, especially above Roblox menus.
+						if typeof(RequestedWindow.ProcessTouchInput) == "function" then
+							local ProcessingSucceeded, TouchWasHandled = pcall(
+								RequestedWindow.ProcessTouchInput,
+								RequestedWindow,
+								InputState,
+								InputObject
+							)
+							if ProcessingSucceeded and TouchWasHandled then
+								return Enum.ContextActionResult.Sink
+							end
+						end
+
 						local TouchInteractionState = RequestedWindow._TouchInteractionState
 						if TouchInteractionState and TouchInteractionState.ActiveInputObject == InputObject then
 							return Enum.ContextActionResult.Sink
@@ -8281,8 +8497,7 @@ function Library:SetInputBlocking(Type, Enabled)
 				Enum.UserInputType.MouseButton2,
 				Enum.UserInputType.MouseButton3,
 				Enum.UserInputType.MouseMovement,
-				Enum.UserInputType.MouseWheel,
-				Enum.UserInputType.Touch
+				Enum.UserInputType.MouseWheel
 			)
 		elseif Type == "Camera" then
 			BindCoreActionAtPriority(ContextActionService, NewName, function(ActionName, InputState, InputObject)

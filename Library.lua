@@ -573,16 +573,16 @@ Theme = {
 
 	SectionHover = Color3.fromRGB(27, 35, 42),
 
-	-- Desktop uses the compact monospaced family from the original Contact
-	-- interface. Its stable glyph widths keep dense information columns aligned
-	-- and make technical values easier to scan without the rounded application
-	-- typography introduced by the previous visual experiment.
-	Font            = 3,
+	-- Desktop uses Drawing.Fonts.Plex. Potassium maps this identifier to the
+	-- balanced proportional typeface used by the earlier Contact interface;
+	-- Monospace is intentionally reserved for feature renderers that explicitly
+	-- request code-like text rather than for the complete application surface.
+	Font            = 2,
 	TitleFontSize   = 18,
 	SectionFontSize = 15,
 	ElementFontSize = 14,
 
-	FontCharWidthRatio = 0.56,
+	FontCharWidthRatio = 0.5,
 
 	FontLineHeightRatio = 1.35,
 
@@ -727,10 +727,9 @@ function Theme:GetElementAvailableWidth(Element, Window)
 end
 
 GetEditableTextCharacterWidth = function(FontSize)
-	-- Text boxes use a tighter width than wrapped paragraphs because Drawing
-	-- renders the selected monospaced font narrower than the old conservative
-	-- clipping multiplier. Keeping this in one helper makes cursor, selection,
-	-- and mouse hit testing agree visually.
+	-- Editable controls and retained text use one font-specific width estimate.
+	-- Keeping this calculation centralized makes Plex cursor placement,
+	-- selection, horizontal clipping, and pointer hit testing agree visually.
 	return FontSize * Theme.FontCharWidthRatio
 end
 
@@ -3998,9 +3997,10 @@ function Library:CreateWindow(WindowConfiguration)
 				LayoutRequiresScrollbarCorrection = true
 			end
 
-			-- Section maximum height values are authored in design space. They are
-			-- local section limits, not viewport limits; the main window canvas is
-			-- responsible for scrolling to lower sections.
+			-- Section maximum heights are stored in design space and converted to
+			-- screen space whenever the viewport scale changes. This keeps a panel's
+			-- visible height proportional to the controls inside it at every desktop,
+			-- phone, and tablet scale.
 			local EffectiveMaxHeight = Section._MaxHeight
 
 			if EffectiveMaxHeight and SectionContentHeight > EffectiveMaxHeight then
@@ -4008,7 +4008,11 @@ function Library:CreateWindow(WindowConfiguration)
 				-- The renderer uses the clipped height for the border, while input
 				-- and scrollbar math keep using the full content height for scrolling.
 				Section._ClippedHeight = EffectiveMaxHeight
-				Section._SectionMaxScroll = SectionContentHeight - EffectiveMaxHeight + Theme.ElementHeight + Theme.ElementPadding
+				-- SectionContentHeight already includes the header and the final body
+				-- padding. Subtracting the visible height therefore produces the exact
+				-- travel needed to reveal the last control. Adding another header here
+				-- used to make the scrollbar range disagree with the rendered content.
+				Section._SectionMaxScroll = math.max(0, SectionContentHeight - EffectiveMaxHeight)
 				Section._SectionScrollOffset = math.clamp(Section._SectionScrollOffset or 0, 0, Section._SectionMaxScroll)
 				Section._ContentHeight = EffectiveMaxHeight
 			else
@@ -5056,7 +5060,13 @@ function Library:CreateWindow(WindowConfiguration)
 		Section._PositionY = 0
 		Section._Width = 0
 		Section._IsHovered = false
-		Section._MaxHeight = SectionConfiguration.MaxHeight or nil
+		-- Keep the authored limit separately from its scaled screen-space value.
+		-- A viewport change can then rebuild every section limit from the original
+		-- number instead of repeatedly scaling an already scaled result.
+		Section._BaseMaximumHeight = tonumber(SectionConfiguration.MaxHeight)
+		Section._MaxHeight = Section._BaseMaximumHeight
+			and Section._BaseMaximumHeight * (Window._CurrentViewportScale or 1)
+			or nil
 		Section._SectionScrollOffset = 0
 		Section._SectionMaxScroll = 0
 		Section._DraggingScrollbar = false
@@ -8718,6 +8728,16 @@ function Library:CreateWindow(WindowConfiguration)
 
 		for ParameterKey, BaseValue in pairs(Theme.Base) do
 			Theme[ParameterKey] = BaseValue * Scale
+		end
+
+		-- Section MaxHeight values belong to the same design coordinate system as
+		-- the theme dimensions. Recalculate from the immutable authored value so
+		-- local panel viewports and their scrollbars remain aligned after a display
+		-- resize, orientation change, or a different desktop resolution.
+		for SectionIndex, Section in ipairs(Window._Sections) do
+			if Section._BaseMaximumHeight then
+				Section._MaxHeight = Section._BaseMaximumHeight * Scale
+			end
 		end
 
 		Window:ApplyTouchViewportGeometry(Viewport, Scale, false)

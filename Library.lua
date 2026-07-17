@@ -573,17 +573,16 @@ Theme = {
 
 	SectionHover = Color3.fromRGB(27, 35, 42),
 
-	-- Font metrics are intentionally ratio based. The User Interface family is
-	-- selected instead of a code font so long labels read like a polished product
-	-- rather than executor console output. Roblox Drawing fonts do not
-	-- provide full text measurement everywhere, so the library uses predictable
-	-- estimates that scale together.
-	Font            = 0,
-	TitleFontSize   = 20,
-	SectionFontSize = 16,
-	ElementFontSize = 15,
+	-- Desktop uses the compact monospaced family from the original Contact
+	-- interface. Its stable glyph widths keep dense information columns aligned
+	-- and make technical values easier to scan without the rounded application
+	-- typography introduced by the previous visual experiment.
+	Font            = 3,
+	TitleFontSize   = 18,
+	SectionFontSize = 15,
+	ElementFontSize = 14,
 
-	FontCharWidthRatio = 0.5,
+	FontCharWidthRatio = 0.56,
 
 	FontLineHeightRatio = 1.35,
 
@@ -593,7 +592,7 @@ Theme = {
 
 	-- Layout tokens are kept together so adaptive scaling can resize the whole
 	-- interface proportionally when the viewport changes.
-	WindowWidth         = 720,
+	WindowWidth         = 620,
 	TitleBarHeight      = 50,
 	WindowVisibleHeight = 680,
 	ElementHeight       = 38,
@@ -601,9 +600,9 @@ Theme = {
 	SectionPadding      = 16,
 	InnerMargin         = 18,
 	ScrollbarWidth      = 7,
-	WindowCornerRadius  = 8,
-	ControlCornerRadius = 6,
-	CompactCornerRadius = 4,
+	WindowCornerRadius  = 0,
+	ControlCornerRadius = 0,
+	CompactCornerRadius = 0,
 
 	-- Color picker grid dimensions.
 	ColorSwatchSize = 24,
@@ -2388,6 +2387,8 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Touch controls need a larger unscaled target than desktop controls. The
 		-- viewport pass below performs the final proportional scaling and clamps
 		-- the complete window to the currently visible phone or tablet area.
+		MobileTheme.Font = 0
+		MobileTheme.FontCharWidthRatio = 0.5
 		MobileTheme.TitleFontSize = 19
 		MobileTheme.SectionFontSize = 15
 		MobileTheme.ElementFontSize = 14
@@ -2399,6 +2400,9 @@ function Library:CreateWindow(WindowConfiguration)
 		MobileTheme.SectionPadding = 10
 		MobileTheme.InnerMargin = 12
 		MobileTheme.ScrollbarWidth = 8
+		MobileTheme.WindowCornerRadius = 8
+		MobileTheme.ControlCornerRadius = 6
+		MobileTheme.CompactCornerRadius = 4
 		MobileTheme.Base = nil
 		Theme = MobileTheme
 		Library.Theme = Theme
@@ -3258,12 +3262,10 @@ function Library:CreateWindow(WindowConfiguration)
 			SearchBarHeightOffset = 32
 		end
 
-		-- Narrow windows use one full-width column regardless of input device.
-		-- This keeps manually compacted desktop windows readable instead of forcing
-		-- two undersized cards beside each other. Wider desktop and landscape touch
-		-- layouts retain the denser two-column composition.
+		-- Only portrait touch layouts collapse to one column. Desktop windows retain
+		-- the dense two-column information layout at every permitted resize width,
+		-- matching Contact's original scan-friendly composition.
 		local UseSingleColumnLayout = Window._UseSingleColumnLayout == true
-			or Theme.WindowWidth < 640
 		local ColumnWidth = UseSingleColumnLayout
 			and (Theme.WindowWidth - Theme.InnerMargin * 2)
 			or ((Theme.WindowWidth - Theme.InnerMargin * 3) / 2)
@@ -8707,10 +8709,10 @@ function Library:CreateWindow(WindowConfiguration)
 		-- of stretching past the viewport. The upper clamp prevents oversized
 		-- monitors from making text and controls feel inflated.
 		local RawScale = math.min(Viewport.X / 1920, Viewport.Y / 1080)
-		-- Personal computers retain the authored type and control dimensions. Their
-		-- windows are already resizable, so reducing every token on a 1680-wide
-		-- viewport only made the interface look miniature and harder to operate.
-		local MinimumScale = Window._TouchInputAvailable and 0.78 or 1
+		-- Desktop retains the original proportional scale, which produced the dense
+		-- two-column layout on common 1200- and 1680-wide displays. Touch screens keep
+		-- a larger lower bound so controls remain comfortable to press.
+		local MinimumScale = Window._TouchInputAvailable and 0.78 or 0.62
 		local Scale = math.clamp(RawScale, MinimumScale, 1.35)
 		Window._CurrentViewportScale = Scale
 

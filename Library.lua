@@ -113,13 +113,14 @@ do
 	end
 end
 
-local UserInputService, RunService, ContextActionService, GraphicalUserInterfaceService, Workspace
+local UserInputService, RunService, ContextActionService, GraphicalUserInterfaceService, CoreGui, Workspace
 local DrawingLibrary = Drawing
 local DataModel = CloneReference(game)
 local GetService = CloneFunction(DataModel.GetService)
 local IsDataModelLoaded = CloneFunction(DataModel.IsLoaded)
 local DataModelLoadedSignal = DataModel.Loaded
 local WaitForDataModelLoaded = CloneFunction(DataModelLoadedSignal.Wait)
+local CreateInstance = CloneFunction(Instance.new)
 
 -- Roblox exposes a one-shot Loaded signal specifically for initialization.
 -- Check IsLoaded first because waiting after the signal has already fired would
@@ -135,6 +136,7 @@ do
 	RunService           = CloneReference(GetService(DataModel, "RunService"))
 	ContextActionService = CloneReference(GetService(DataModel, "ContextActionService"))
 	GraphicalUserInterfaceService = CloneReference(GetService(DataModel, "GuiService"))
+	CoreGui              = CloneReference(GetService(DataModel, "CoreGui"))
 	Workspace            = CloneReference(GetService(DataModel, "Workspace"))
 end
 
@@ -142,7 +144,7 @@ local GetMouseLocation, IsMouseButtonPressed, IsKeyDown
 local GetStringForKeyCode, GetKeysPressed, GetMouseButtonsPressed
 local GetDeviceType
 local GetGraphicalUserInterfaceInset
-local HeartbeatSignalConnect
+local HeartbeatSignalConnect, InterfaceFrameSignal, InterfaceFrameSignalConnect
 local BindCoreActionAtPriority, UnbindCoreAction
 local InputBeganSignalConnect, InputChangedSignalConnect, InputEndedSignalConnect
 local WindowFocusReleasedConnect, WindowFocusedConnect
@@ -170,6 +172,8 @@ do
 	GetGraphicalUserInterfaceInset = CloneFunction(GraphicalUserInterfaceService.GetGuiInset)
 
 	HeartbeatSignalConnect = CloneFunction(RunService.Heartbeat.Connect)
+	InterfaceFrameSignal = RunService.PreRender or RunService.RenderStepped or RunService.Heartbeat
+	InterfaceFrameSignalConnect = CloneFunction(InterfaceFrameSignal.Connect)
 
 	BindCoreActionAtPriority = CloneFunction(ContextActionService.BindCoreActionAtPriority)
 	UnbindCoreAction         = CloneFunction(ContextActionService.UnbindCoreAction)
@@ -1128,7 +1132,11 @@ local function GetWindowContentViewportYRange(Window, WindowPositionY)
 	-- Scrollable content starts below both, but it must stop at the bottom of
 	-- the body. Keeping this calculation centralized prevents resized windows
 	-- from letting sections draw below the visual frame.
-	local ViewportStart = WindowPositionY + Theme.TitleBarHeight + (Window._TabBarHeight or 0)
+	local SearchBarHeightOffset = Window._SearchActive and 32 or 0
+	local ViewportStart = WindowPositionY
+		+ Theme.TitleBarHeight
+		+ (Window._TabBarHeight or 0)
+		+ SearchBarHeightOffset
 	local ViewportEnd = WindowPositionY + Theme.TitleBarHeight + Window._VisibleHeight
 	return ViewportStart, math.max(ViewportStart, ViewportEnd)
 end
@@ -1411,6 +1419,20 @@ local function IsElementVisibleInViewport(ElementAbsolutePositionY, ElementHeigh
 	end
 
 	return true
+end
+
+local function IsElementFullyVisibleInViewport(ElementAbsolutePositionY, ElementHeight, Section, Window, WindowPositionY)
+	-- Retained Drawing rectangles cannot be clipped by a parent object. Controls
+	-- are therefore shown only when their complete interactive body fits inside
+	-- both the page viewport and an optional section viewport. Multi-line labels
+	-- continue using line-level clipping through IsElementVisibleInViewport.
+	local AllowedMinimumPositionY, AllowedMaximumPositionY = GetSectionAllowedYRange(
+		Section,
+		Window,
+		WindowPositionY
+	)
+	return ElementAbsolutePositionY >= AllowedMinimumPositionY
+		and ElementAbsolutePositionY + ElementHeight <= AllowedMaximumPositionY
 end
 
 -- Apply a batch of Drawing properties through the backend abstraction. Central
@@ -1720,15 +1742,33 @@ local function IsTouchInterfaceDevice()
 	if UserInputService.TouchEnabled ~= true then
 		return false
 	end
+	if UserInputService.KeyboardEnabled == true or UserInputService.MouseEnabled == true then
+		-- Some executors report DeviceType.Unknown and TouchEnabled on ordinary
+		-- personal computers. Physical keyboard or mouse availability is a stronger
+		-- desktop signal than the touch capability bit and prevents the permanent
+		-- TouchInterface sink from disabling camera and mouse window controls.
+		return false
+	end
 
 	local ViewportSize = GetViewportSize()
-	return math.min(ViewportSize.X, ViewportSize.Y) <= 1100
+	return math.min(ViewportSize.X, ViewportSize.Y) <= 1400
 end
 
 -- Application scripts use this capability query to expose controls that only
 -- make sense when no physical keyboard shortcut is guaranteed to be present.
 function Library:IsTouchInputAvailable()
 	return IsTouchInterfaceDevice()
+end
+
+function Library:GetTouchInputScreenPosition(InputObject, CoordinateInset)
+	-- Application-level touch controls must use the exact coordinate conversion
+	-- used by the library window. Returning nil for an invalid object lets callers
+	-- pass the input through without manufacturing an unreliable position.
+	if not InputObject or typeof(InputObject.Position) ~= "Vector3" then
+		return nil
+	end
+
+	return GetTouchInputScreenPosition(InputObject, CoordinateInset)
 end
 
 local CachedPreferredInput = nil
@@ -1866,6 +1906,16 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 			end
 
 			if FocusedBox then
+				-- A touch device edits through the hidden native Roblox TextBox. Its
+				-- Text changed signal is the sole writer while the on-screen keyboard
+				-- is open, preventing the same key from being inserted a second time
+				-- by the desktop-oriented manual keyboard path below.
+				local NativeTextInputState = Window._NativeTextInputState
+				if Window._TouchInputAvailable
+					and NativeTextInputState
+					and NativeTextInputState.TargetElement == FocusedBox then
+					return
+				end
 
 				local function PerformTypingAction()
 					if not FocusedBox._IsFocused or not Window._Visible or Window._Destroyed then 
@@ -2746,12 +2796,14 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Touch input does not consistently update GetMouseLocation across
 		-- executors. Preserve the latest touch coordinate so hit testing, retained
 		-- rendering, and the immediate renderer all inspect the same position.
-		local TouchInteractionState = Window._TouchInteractionState
-		if TouchInteractionState and TouchInteractionState.CurrentPosition then
-			return TouchInteractionState.CurrentPosition
-		end
-		if Window._LastPointerPosition then
-			return Window._LastPointerPosition
+		if Window._TouchInputAvailable then
+			local TouchInteractionState = Window._TouchInteractionState
+			if TouchInteractionState and TouchInteractionState.CurrentPosition then
+				return TouchInteractionState.CurrentPosition
+			end
+			if Window._LastPointerPosition then
+				return Window._LastPointerPosition
+			end
 		end
 		return GetMouseLocation(UserInputService)
 	end
@@ -2760,8 +2812,35 @@ function Library:CreateWindow(WindowConfiguration)
 		local Camera = GetCurrentCamera()
 		local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
 		local LauncherRadius = math.clamp(Theme.ElementHeight * 0.82, 28, 38)
+		local LauncherMargin = math.max(8, math.floor(LauncherRadius * 0.28))
+		local LauncherCenter
+
+		-- TopbarInset is the live rectangle Roblox reserves as usable top-bar
+		-- space after its own controls and device safe areas are accounted for.
+		-- Anchoring to its leading edge keeps the recovery control beside Roblox's
+		-- panel on phones and tablets without assuming a particular panel width.
+		local TopbarInsetReadSucceeded, TopbarInset = pcall(function()
+			return GraphicalUserInterfaceService.TopbarInset
+		end)
+		if TopbarInsetReadSucceeded and typeof(TopbarInset) == "Rect" and TopbarInset.Height > 0 then
+			LauncherCenter = Vector2.new(
+				TopbarInset.Min.X + LauncherMargin + LauncherRadius,
+				TopbarInset.Min.Y + TopbarInset.Height / 2
+			)
+		else
+			local TopLeftInset = GetTouchInputCoordinateInset()
+			LauncherCenter = Vector2.new(
+				TopLeftInset.X + LauncherMargin + LauncherRadius,
+				math.max(LauncherMargin + LauncherRadius, TopLeftInset.Y / 2)
+			)
+		end
+
+		LauncherCenter = Vector2.new(
+			math.clamp(LauncherCenter.X, LauncherRadius + LauncherMargin, ViewportSize.X - LauncherRadius - LauncherMargin),
+			math.clamp(LauncherCenter.Y, LauncherRadius + LauncherMargin, ViewportSize.Y - LauncherRadius - LauncherMargin)
+		)
 		return {
-			Center = Vector2.new(ViewportSize.X / 2, ViewportSize.Y / 2),
+			Center = LauncherCenter,
 			Radius = LauncherRadius,
 			HitRadius = LauncherRadius + 12,
 		}
@@ -2917,6 +2996,185 @@ function Library:CreateWindow(WindowConfiguration)
 		end)
 	}
 
+	-- Drawing text boxes cannot summon the platform keyboard by themselves. A
+	-- single transparent Roblox TextBox acts as a touch-only input bridge for the
+	-- complete window. Desktop users continue through the existing
+	-- BindCoreActionAtPriority keyboard implementation without creating this Gui.
+	Window._NativeTextInputState = {
+		Available = false,
+		Synchronizing = false,
+		TargetElement = nil,
+		ScreenGui = nil,
+		TextBox = nil,
+		CaptureFocus = nil,
+		ReleaseFocus = nil,
+	}
+
+	if Window._TouchInputAvailable then
+		local NativeTextInputState = Window._NativeTextInputState
+		local NativeTextInputScreenGui
+		local NativeTextInputTextBox
+		local NativeInputCreationSucceeded = pcall(function()
+			NativeTextInputScreenGui = CreateInstance("ScreenGui")
+			NativeTextInputScreenGui.Name = RandomString(32)
+			NativeTextInputScreenGui.DisplayOrder = 2147483647
+			NativeTextInputScreenGui.IgnoreGuiInset = true
+			NativeTextInputScreenGui.ResetOnSpawn = false
+			NativeTextInputScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+
+			NativeTextInputTextBox = CreateInstance("TextBox")
+			NativeTextInputTextBox.Name = RandomString(32)
+			NativeTextInputTextBox.Active = true
+			NativeTextInputTextBox.BackgroundTransparency = 1
+			NativeTextInputTextBox.BorderSizePixel = 0
+			NativeTextInputTextBox.ClearTextOnFocus = false
+			NativeTextInputTextBox.MultiLine = false
+			NativeTextInputTextBox.Position = UDim2.new(0, 0, 0, 0)
+			NativeTextInputTextBox.Size = UDim2.new(0, 1, 0, 1)
+			NativeTextInputTextBox.Text = ""
+			NativeTextInputTextBox.TextEditable = true
+			NativeTextInputTextBox.TextTransparency = 1
+			NativeTextInputTextBox.Visible = true
+			-- The bridge is fully transparent, so it does not require an extreme
+			-- rendering layer. A conservative value remains compatible with Roblox
+			-- clients that still validate GuiObject.ZIndex against a narrow range.
+			NativeTextInputTextBox.ZIndex = 10
+			pcall(function()
+				NativeTextInputTextBox.ShowNativeInput = true
+			end)
+			NativeTextInputTextBox.Parent = NativeTextInputScreenGui
+			NativeTextInputScreenGui.Parent = CoreGui
+		end)
+
+		if NativeInputCreationSucceeded and NativeTextInputScreenGui and NativeTextInputTextBox then
+			NativeTextInputState.Available = true
+			NativeTextInputState.ScreenGui = NativeTextInputScreenGui
+			NativeTextInputState.TextBox = NativeTextInputTextBox
+			NativeTextInputState.CaptureFocus = CloneFunction(NativeTextInputTextBox.CaptureFocus)
+			NativeTextInputState.ReleaseFocus = CloneFunction(NativeTextInputTextBox.ReleaseFocus)
+
+			local NativeTextChangedSignal = NativeTextInputTextBox:GetPropertyChangedSignal("Text")
+			local NativeTextChangedConnection = NativeTextChangedSignal:Connect(NewCClosure(function()
+				if NativeTextInputState.Synchronizing then
+					return
+				end
+
+				local TargetElement = NativeTextInputState.TargetElement
+				if not TargetElement or Window._Destroyed then
+					return
+				end
+
+				local UpdatedText = tostring(NativeTextInputTextBox.Text or "")
+				TargetElement:SetValue(UpdatedText)
+				local NativeCursorPosition = tonumber(NativeTextInputTextBox.CursorPosition)
+				if NativeCursorPosition and NativeCursorPosition > 0 then
+					SetTextBoxCursorIndex(TargetElement, NativeCursorPosition)
+				else
+					SetTextBoxCursorIndex(TargetElement, #UpdatedText + 1)
+				end
+				TargetElement._CursorVisible = true
+				TargetElement._CursorBlinkTime = tick()
+				Window:RecalculateLayout()
+			end))
+			table.insert(Window._Connections, NativeTextChangedConnection)
+
+			local NativeFocusLostConnection = NativeTextInputTextBox.FocusLost:Connect(NewCClosure(function()
+				local TargetElement = NativeTextInputState.TargetElement
+				NativeTextInputState.TargetElement = nil
+				if TargetElement then
+					TargetElement._IsFocused = false
+					TargetElement._CursorVisible = false
+					TargetElement._SelectionDragging = false
+					ClearTextBoxSelection(TargetElement)
+				end
+				Window._ActiveTextSelectionBox = nil
+				Window:SetInputBlocking("Typing", false)
+				if not Window._Destroyed and not Window._Destroying then
+					Window:RecalculateLayout()
+				end
+			end))
+			table.insert(Window._Connections, NativeFocusLostConnection)
+
+			-- ReturnPressedFromOnScreenKeyboard is available on current clients, but
+			-- several executor object bridges omit the signal. Keep the ordinary
+			-- FocusLost path functional when that optional signal cannot be observed.
+			local NativeReturnConnectionCreationSucceeded, NativeReturnConnection = pcall(function()
+				return NativeTextInputTextBox.ReturnPressedFromOnScreenKeyboard:Connect(NewCClosure(function()
+					if NativeTextInputState.TargetElement then
+						pcall(NativeTextInputState.ReleaseFocus, NativeTextInputTextBox, true)
+					end
+				end))
+			end)
+			if NativeReturnConnectionCreationSucceeded and NativeReturnConnection then
+				table.insert(Window._Connections, NativeReturnConnection)
+			end
+		else
+			if NativeTextInputScreenGui then
+				pcall(NativeTextInputScreenGui.Destroy, NativeTextInputScreenGui)
+			end
+		end
+	end
+
+	function Window:FocusNativeTextInput(TargetElement)
+		local NativeTextInputState = Window._NativeTextInputState
+		if not Window._TouchInputAvailable
+			or not NativeTextInputState
+			or not NativeTextInputState.Available
+			or not TargetElement then
+			return false
+		end
+
+		local NativeTextInputTextBox = NativeTextInputState.TextBox
+		NativeTextInputState.TargetElement = TargetElement
+		NativeTextInputState.Synchronizing = true
+		NativeTextInputTextBox.Text = tostring(TargetElement._Value or "")
+		NativeTextInputTextBox.PlaceholderText = tostring(TargetElement._Placeholder or "")
+		NativeTextInputTextBox.CursorPosition = #NativeTextInputTextBox.Text + 1
+		NativeTextInputTextBox.SelectionStart = -1
+		NativeTextInputState.Synchronizing = false
+		Window:SetInputBlocking("Typing", false)
+
+		-- CaptureFocus is deferred until the pointer callback finishes. Roblox can
+		-- otherwise discard a focus request that occurs inside the same touch event
+		-- which selected the Drawing control.
+		task.defer(function()
+			if not Window._Destroyed
+				and Window._Visible
+				and NativeTextInputState.TargetElement == TargetElement then
+				pcall(NativeTextInputState.CaptureFocus, NativeTextInputTextBox)
+			end
+		end)
+		return true
+	end
+
+	function Window:ReleaseNativeTextInput(TargetElement)
+		local NativeTextInputState = Window._NativeTextInputState
+		if not NativeTextInputState or not NativeTextInputState.Available then
+			return
+		end
+		if TargetElement and NativeTextInputState.TargetElement ~= TargetElement then
+			return
+		end
+
+		NativeTextInputState.TargetElement = nil
+		pcall(NativeTextInputState.ReleaseFocus, NativeTextInputState.TextBox, false)
+	end
+
+	function Window:DestroyNativeTextInput()
+		local NativeTextInputState = Window._NativeTextInputState
+		if not NativeTextInputState then
+			return
+		end
+
+		Window:ReleaseNativeTextInput()
+		if NativeTextInputState.ScreenGui then
+			pcall(NativeTextInputState.ScreenGui.Destroy, NativeTextInputState.ScreenGui)
+		end
+		NativeTextInputState.Available = false
+		NativeTextInputState.ScreenGui = nil
+		NativeTextInputState.TextBox = nil
+	end
+
 	function Window:PerformSearch()
 		local SearchQuery = string.lower(Window._SearchTextBox._Value)
 		Window._SearchResults = {}
@@ -3000,10 +3258,12 @@ function Library:CreateWindow(WindowConfiguration)
 			SearchBarHeightOffset = 32
 		end
 
-		-- Narrow touch viewports use one full-width column. Landscape phones and
-		-- tablets retain the denser two-column composition when enough horizontal
-		-- space is available, so the same code adapts cleanly after rotation.
+		-- Narrow windows use one full-width column regardless of input device.
+		-- This keeps manually compacted desktop windows readable instead of forcing
+		-- two undersized cards beside each other. Wider desktop and landscape touch
+		-- layouts retain the denser two-column composition.
 		local UseSingleColumnLayout = Window._UseSingleColumnLayout == true
+			or Theme.WindowWidth < 640
 		local ColumnWidth = UseSingleColumnLayout
 			and (Theme.WindowWidth - Theme.InnerMargin * 2)
 			or ((Theme.WindowWidth - Theme.InnerMargin * 3) / 2)
@@ -3150,7 +3410,12 @@ function Library:CreateWindow(WindowConfiguration)
 					local ElementAbsolutePosition = WindowPosition + Vector2.new(Element._PositionX, Element._PositionY - Window._ScrollOffset)
 					local ElementAbsoluteSize = Vector2.new(ElementAvailableWidth, Element._Height)
 
-					local IsElementVisible = IsElementVisibleInViewport(ElementAbsolutePosition.Y, Element._Height, Section, Window, WindowPosition.Y)
+					local InteractiveBodyHeight = Element._Type == "TextBox"
+						and (Element._TextBoxBaseHeight or Element._Height)
+						or Element._Height
+					local IsElementVisible = Element._Type == "TextLabel"
+						and IsElementVisibleInViewport(ElementAbsolutePosition.Y, Element._Height, Section, Window, WindowPosition.Y)
+						or IsElementFullyVisibleInViewport(ElementAbsolutePosition.Y, InteractiveBodyHeight, Section, Window, WindowPosition.Y)
 
 					if Element._Type == "TextLabel" then
 
@@ -3426,7 +3691,10 @@ function Library:CreateWindow(WindowConfiguration)
 								AllowedMinY,
 								AllowedMaxY
 							)
-							Element._SuggestionDropdownRegion = { Position = SuggestionPosition, Size = SuggestionSize }
+							Element._SuggestionDropdownRegion = ClippedSuggestionPosition and {
+								Position = ClippedSuggestionPosition,
+								Size = ClippedSuggestionSize,
+							} or nil
 
 							if ClippedSuggestionPosition and ClippedSuggestionSize then
 								ApplyDrawingProperties(Element._SuggestionBackgroundDrawing, {
@@ -3536,7 +3804,13 @@ function Library:CreateWindow(WindowConfiguration)
 								local IsInsideDropdownRegion = OptionsRegion
 									and ItemAbsolutePosition.Y + Theme.ElementHeight > OptionsRegion.Position.Y
 									and ItemAbsolutePosition.Y < OptionsRegion.Position.Y + OptionsRegion.Size.Y
-								local IsItemVisible = IsInsideDropdownRegion and IsElementVisibleInViewport(ItemAbsolutePosition.Y, Theme.ElementHeight, Section, Window, WindowPosition.Y)
+								local IsItemVisible = IsInsideDropdownRegion and IsElementFullyVisibleInViewport(
+									ItemAbsolutePosition.Y,
+									Theme.ElementHeight,
+									Section,
+									Window,
+									WindowPosition.Y
+								)
 								local IsItemHovered = IsItemVisible and IsPointInsideRectangle(Window:GetCurrentPointerPosition(), ItemAbsolutePosition, Vector2.new(ItemData._Width, Theme.ElementHeight))
 
 								if ItemData.BackgroundDrawing then
@@ -4272,11 +4546,20 @@ function Library:CreateWindow(WindowConfiguration)
 				local ElapsedTime = tick() - HighlightElement._HighlightTime
 				if ElapsedTime >= 2.0 then
 					Window._HighlightedElement = nil
+					Window._HighlightedSection = nil
 					ApplyDrawingProperties(Window._ElementHighlightDrawing, { Visible = false })
 				else
 					local HighlightAlpha = math.clamp(1 - (ElapsedTime / 2.0), 0, 1)
 					local HighlightAbsolutePosition = WindowPosition + Vector2.new(HighlightElement._PositionX, HighlightElement._PositionY - Window._ScrollOffset)
 					local HighlightAbsoluteSize = Vector2.new(Theme:GetElementAvailableWidth(HighlightElement, Window), HighlightElement._Height)
+					local HighlightSection = HighlightElement._Section or Window._HighlightedSection
+					local HighlightIsVisible = HighlightSection ~= nil and IsElementFullyVisibleInViewport(
+						HighlightAbsolutePosition.Y,
+						HighlightAbsoluteSize.Y,
+						HighlightSection,
+						Window,
+						WindowPosition.Y
+					)
 
 					ApplyDrawingProperties(Window._ElementHighlightDrawing, {
 						Position = HighlightAbsolutePosition,
@@ -4284,7 +4567,7 @@ function Library:CreateWindow(WindowConfiguration)
 						Thickness = 2,
 						Color = Theme.TitleBarSeparator,
 						Transparency = HighlightAlpha,
-						Visible = (HighlightAbsolutePosition.Y + HighlightElement._Height > ViewportStart) and (HighlightAbsolutePosition.Y < ViewportEnd) and Window._Visible
+						Visible = HighlightIsVisible,
 					})
 				end
 			end
@@ -4373,69 +4656,100 @@ function Library:CreateWindow(WindowConfiguration)
 
 	local function UpdateElementsVisibility()
 		if UseImmediateMode then return end
-		local IsVisible = Window._Visible
-
 		for DiscardIndex, Section in ipairs(Window._Sections) do
-			local IsSectionVisible = IsVisible
-			if IsVisible and Section._PageIndex and Section._PageIndex ~= Window._ActivePageIndex then
-				IsSectionVisible = false
-			end
+			local SectionBelongsToActivePage = not Section._PageIndex
+				or Section._PageIndex == Window._ActivePageIndex
+			local ShouldForceHideSection = not Window._Visible or not SectionBelongsToActivePage
+			if ShouldForceHideSection then
+				SetDrawingObjectsVisibility({
+					Section._FullBackground,
+					Section._Background,
+					Section._Border,
+					Section._TextLabel,
+					Section._AccentLine,
+					Section._LeftAccentLine,
+					Section._ScrollbarTrack,
+					Section._ScrollbarHandle,
+				}, false)
 
-			local VisibilityObjects = { Section._FullBackground, Section._Background, Section._Border, Section._TextLabel, Section._AccentLine, Section._LeftAccentLine }
-			SetDrawingObjectsVisibility(VisibilityObjects, IsSectionVisible)
-			for ElementIndex, Element in ipairs(Section._Elements) do
-				if Element._Type == "TextLabel" then
-					SetDrawingObjectsVisibility({ Element._AccentLineDrawing }, IsSectionVisible)
-					for LineIndex, LineDrawingObject in ipairs(Element._LineDrawings or {}) do
-						SetRenderProperty(LineDrawingObject, "Visible", IsSectionVisible)
-					end
-					if not IsSectionVisible then
-							Theme:HideInlineVisualDrawings(Element)
-					end
-
-				elseif Element._Type == "TextButton" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing }, IsSectionVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-
-				elseif Element._Type == "Toggle" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._IndicatorDrawing }, IsSectionVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-
-				elseif Element._Type == "TextBox" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._LabelDrawing, Element._TextDrawing }, IsSectionVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-					if Element._SelectionDrawing then SetRenderProperty(Element._SelectionDrawing, "Visible", false) end
-					if Element._CursorDrawing then SetRenderProperty(Element._CursorDrawing, "Visible", false) end
-
-				elseif Element._Type == "Dropdown" then
-					SetDrawingObjectsVisibility({ Element._BackgroundDrawing, Element._BorderDrawing, Element._TextDrawing, Element._ArrowDrawing }, IsSectionVisible)
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-
-					local ItemsAreVisible = IsSectionVisible and Element._Expanded
-					for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects) do
-						SetDrawingObjectsVisibility({ ItemData.BackgroundDrawing, ItemData.TextDrawing, ItemData.SeparatorDrawing }, ItemsAreVisible)
-					end
-
-				elseif Element._Type == "Slider" then
-					SetDrawingObjectsVisibility({
-						Element._LabelDrawing, Element._ValueTextDrawing,
-						Element._TrackBackgroundDrawing, Element._TrackBorderDrawing,
-						Element._TrackFillDrawing, Element._ThumbDrawing, Element._ThumbInnerDrawing,
-					}, IsSectionVisible)
-
-				elseif Element._Type == "ColorPicker" then
-					SetDrawingObjectsVisibility({ Element._LabelDrawing, Element._SwatchDrawing, Element._SwatchBorderDrawing }, IsSectionVisible)
-					if Element._HoverBackgroundDrawing then SetRenderProperty(Element._HoverBackgroundDrawing, "Visible", false) end
-					if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
-					if Element._ChevronDrawing then SetRenderProperty(Element._ChevronDrawing, "Visible", false) end
-
-					if not IsSectionVisible and Window._ActiveColorPicker == Element then
-						Element:ClosePopup()
+				for ElementIndex, Element in ipairs(Section._Elements) do
+					if Element._Type == "TextLabel" then
+						SetDrawingObjectsVisibility({ Element._AccentLineDrawing }, false)
+						for LineIndex, LineDrawingObject in ipairs(Element._LineDrawings or {}) do
+							SetRenderProperty(LineDrawingObject, "Visible", false)
+						end
+						Theme:HideInlineVisualDrawings(Element)
+					elseif Element._Type == "TextButton" then
+						SetDrawingObjectsVisibility({
+							Element._BackgroundDrawing,
+							Element._BorderDrawing,
+							Element._TextDrawing,
+							Element._AccentLineDrawing,
+						}, false)
+					elseif Element._Type == "Toggle" then
+						SetDrawingObjectsVisibility({
+							Element._BackgroundDrawing,
+							Element._BorderDrawing,
+							Element._TextDrawing,
+							Element._IndicatorDrawing,
+							Element._AccentLineDrawing,
+						}, false)
+					elseif Element._Type == "TextBox" then
+						SetDrawingObjectsVisibility({
+							Element._BackgroundDrawing,
+							Element._BorderDrawing,
+							Element._LabelDrawing,
+							Element._TextDrawing,
+							Element._AccentLineDrawing,
+							Element._SelectionDrawing,
+							Element._CursorDrawing,
+							Element._SuggestionBackgroundDrawing,
+							Element._SuggestionBorderDrawing,
+						}, false)
+						for SuggestionRowIndex, SuggestionRow in ipairs(Element._SuggestionRows or {}) do
+							SetDrawingObjectsVisibility({ SuggestionRow.HoverDrawing, SuggestionRow.TextDrawing }, false)
+						end
+					elseif Element._Type == "Dropdown" then
+						SetDrawingObjectsVisibility({
+							Element._BackgroundDrawing,
+							Element._BorderDrawing,
+							Element._TextDrawing,
+							Element._ArrowDrawing,
+							Element._AccentLineDrawing,
+						}, false)
+						for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects or {}) do
+							SetDrawingObjectsVisibility({
+								ItemData.BackgroundDrawing,
+								ItemData.TextDrawing,
+								ItemData.SeparatorDrawing,
+							}, false)
+						end
+					elseif Element._Type == "Slider" then
+						SetDrawingObjectsVisibility({
+							Element._LabelDrawing,
+							Element._ValueTextDrawing,
+							Element._TrackBackgroundDrawing,
+							Element._TrackBorderDrawing,
+							Element._TrackFillDrawing,
+							Element._ThumbDrawing,
+							Element._ThumbInnerDrawing,
+						}, false)
+					elseif Element._Type == "ColorPicker" then
+						SetDrawingObjectsVisibility({
+							Element._LabelDrawing,
+							Element._SwatchDrawing,
+							Element._SwatchBorderDrawing,
+							Element._HoverBackgroundDrawing,
+							Element._AccentLineDrawing,
+							Element._ChevronDrawing,
+						}, false)
+						if Window._ActiveColorPicker == Element then
+							Element:ClosePopup()
+						end
 					end
 				end
 			end
 		end
-
 	end
 
 	function Window:SetActivePage(PageIndex)
@@ -4505,7 +4819,14 @@ function Library:CreateWindow(WindowConfiguration)
 
 		Window._Visible = IsVisible
 		SetDrawingObjectsVisibility(Window._DrawingObjects, IsVisible)
-		UpdateElementsVisibility()
+		if IsVisible then
+			-- Reopening must rebuild positions and clipping before any retained object
+			-- is allowed to remain visible. This prevents the previous hidden frame
+			-- from flashing at stale coordinates after a move or resize.
+			Window:RecalculateLayout()
+		else
+			UpdateElementsVisibility()
+		end
 		Window:UpdateTouchLauncherDrawings()
 	end
 
@@ -4523,6 +4844,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Window._MouseInWindow = false
 			Window._HoveredTooltipElement = nil
 			Window._TooltipVisible = false
+			Window:ReleaseNativeTextInput()
 			local TouchInteractionState = Window._TouchInteractionState
 			if TouchInteractionState then
 				TouchInteractionState.ActiveInputObject = nil
@@ -4784,6 +5106,7 @@ function Library:CreateWindow(WindowConfiguration)
 			LabelConfiguration.Callback = LabelConfiguration.Callback or function() end
 
 			local Element = {}
+			Element._Section = Section
 			Element._Type = "TextLabel"
 			Element._Height = TextBlockHeight(1, Theme.ElementFontSize)
 			Element._Text = LabelConfiguration.Text
@@ -4886,6 +5209,7 @@ function Library:CreateWindow(WindowConfiguration)
 			TextBoxConfiguration.MaximumSuggestions = TextBoxConfiguration.MaximumSuggestions or 5
 
 			local Element = {}
+			Element._Section = Section
 			Element._Type = "TextBox"
 			Element._Height = Theme.ElementHeight
 			Element._Text = TextBoxConfiguration.Text
@@ -5075,6 +5399,7 @@ function Library:CreateWindow(WindowConfiguration)
 			ButtonConfiguration.Callback = ButtonConfiguration.Callback or function() end
 
 			local Element = {}
+			Element._Section = Section
 			Element._Type = "TextButton"
 			Element._Height = Theme.ElementHeight
 			Element._Text = ButtonConfiguration.Text
@@ -5121,6 +5446,7 @@ function Library:CreateWindow(WindowConfiguration)
 			ToggleConfiguration.Callback = ToggleConfiguration.Callback or function() end
 
 			local Element = {}
+			Element._Section = Section
 			Element._Type = "Toggle"
 			Element._Height = Theme.ElementHeight
 			Element._Text = ToggleConfiguration.Text
@@ -5196,6 +5522,7 @@ function Library:CreateWindow(WindowConfiguration)
 			DropdownConfiguration.Callback = DropdownConfiguration.Callback or function() end
 
 			local Element = {}
+			Element._Section = Section
 			Element._Type = "Dropdown"
 			Element._Height = Theme.ElementHeight
 			Element._Text = DropdownConfiguration.Text
@@ -5395,6 +5722,7 @@ function Library:CreateWindow(WindowConfiguration)
 			SliderConfiguration.Callback = SliderConfiguration.Callback or function() end
 
 			local Element = {}
+			Element._Section = Section
 			Element._Type = "Slider"
 			Element._Height = Theme.ElementHeight + 10
 			Element._Text = SliderConfiguration.Text
@@ -5496,6 +5824,7 @@ function Library:CreateWindow(WindowConfiguration)
 			ColorPickerConfiguration.Callback = ColorPickerConfiguration.Callback or function() end
 
 			local Element = {}
+			Element._Section = Section
 			Element._Type = "ColorPicker"
 			Element._Height = Theme.ElementHeight
 			Element._Text = ColorPickerConfiguration.Text
@@ -5819,6 +6148,7 @@ function Library:CreateWindow(WindowConfiguration)
 		if Window._ActiveColorPicker then
 			Window._ActiveColorPicker:ClosePopup()
 		end
+		Window:DestroyNativeTextInput()
 
 		DestroyAllTrackedDrawings()
 
@@ -5932,18 +6262,20 @@ function Library:CreateWindow(WindowConfiguration)
 			return false
 		end
 
-		-- Desktop dimensions saved by an older configuration are usually much too
-		-- large for a phone. Only restore touch geometry that was explicitly saved
-		-- by the touch profile; otherwise retain the responsive size selected by
-		-- UpdateViewportScale and center it inside the current screen.
-		if Window._TouchInputAvailable and Geometry.DeviceProfile ~= Window._DeviceProfile then
+		-- Geometry belongs to the device profile that produced it. Reject desktop
+		-- dimensions on touch screens and touch dimensions on personal computers;
+		-- otherwise a misdetected previous session can permanently preserve an
+		-- oversized mobile window or a miniature desktop window.
+		if Geometry.DeviceProfile and Geometry.DeviceProfile ~= Window._DeviceProfile then
 			local Camera = GetCurrentCamera()
 			local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
-			Window:ApplyTouchViewportGeometry(
-				ViewportSize,
-				Window._CurrentViewportScale or 1,
-				true
-			)
+			if Window._TouchInputAvailable then
+				Window:ApplyTouchViewportGeometry(
+					ViewportSize,
+					Window._CurrentViewportScale or 1,
+					true
+				)
+			end
 			Window._Position = ClampWindowPosition(Vector2.new(
 				(ViewportSize.X - Theme.WindowWidth) / 2,
 				(ViewportSize.Y - Theme.TitleBarHeight - Window._VisibleHeight) / 2
@@ -6022,6 +6354,7 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Focus cleanup is shared by buttons, toggles, dropdowns, sliders, and
 		-- background clicks. Keeping it as a window-level helper prevents each
 		-- click path from carrying its own text focus logic.
+		Window:ReleaseNativeTextInput()
 		local ShouldRecalculateLayout = false
 		for FocusSectionIndex, FocusSection in ipairs(Window:GetActiveSections()) do
 			for FocusElementIndex, FocusElement in ipairs(FocusSection._Elements) do
@@ -6074,7 +6407,9 @@ function Library:CreateWindow(WindowConfiguration)
 		SetTextBoxCursorIndex(TextBoxElement, CursorIndex)
 		ClearTextBoxSelection(TextBoxElement)
 		Window._ActiveTextSelectionBox = TextBoxElement
-		Window:SetInputBlocking("Typing", true)
+		if not Window:FocusNativeTextInput(TextBoxElement) then
+			Window:SetInputBlocking("Typing", true)
+		end
 	end
 
 	local function UpdateActiveTextBoxMouseSelection(MousePosition)
@@ -6111,12 +6446,19 @@ function Library:CreateWindow(WindowConfiguration)
 		-- input blocking synchronized for every search interaction path.
 		Window._SearchTextBox._IsFocused = IsFocused == true
 		if not Window._SearchTextBox._IsFocused then
+			Window:ReleaseNativeTextInput(Window._SearchTextBox)
 			Window._SearchTextBox._CursorVisible = false
 			Window._SearchTextBox._CursorBlinkTime = 0
 			Window._SearchTextBox._SelectionDragging = false
 			ClearTextBoxSelection(Window._SearchTextBox)
 		end
-		Window:SetInputBlocking("Typing", Window._SearchTextBox._IsFocused)
+		if Window._SearchTextBox._IsFocused then
+			if not Window:FocusNativeTextInput(Window._SearchTextBox) then
+				Window:SetInputBlocking("Typing", true)
+			end
+		else
+			Window:SetInputBlocking("Typing", false)
+		end
 	end
 
 	local function SetSearchActive(IsActive, ShouldResetQuery)
@@ -6541,7 +6883,7 @@ function Library:CreateWindow(WindowConfiguration)
 		local PreviousTooltipVisible = Window._TooltipVisible == true
 		Window._HoveredTooltipElement = nil
 
-		-- Heartbeat processing continues while a window is hidden so animations
+		-- Frame processing continues while a window is hidden so animations
 		-- can resume smoothly. Clear every transient hover state before returning;
 		-- otherwise an invisible control could accumulate the tooltip delay or
 		-- request input capture merely because the pointer overlaps its old bounds.
@@ -6798,14 +7140,25 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		if Window._ActiveDropdown then
-			for ItemIndex, ItemData in ipairs(Window._ActiveDropdown._ItemDrawingObjects) do
-				local OptionsRegion = Window._ActiveDropdown._OptionsRegion
+			local ActiveDropdown = Window._ActiveDropdown
+			local DropdownSection = ActiveDropdown._Section
+			for ItemIndex, ItemData in ipairs(ActiveDropdown._ItemDrawingObjects) do
+				local OptionsRegion = ActiveDropdown._OptionsRegion
 				local ItemRegionPosition = Vector2.new(Window._Position.X + ItemData._PositionX, Window._Position.Y + ItemData._PositionY - Window._ScrollOffset)
 				local ItemRegionSize = Vector2.new(ItemData._Width, Theme.ElementHeight)
 				local IsInsideOptionsRegion = OptionsRegion
-					and ItemRegionPosition.Y + Theme.ElementHeight > OptionsRegion.Position.Y
-					and ItemRegionPosition.Y < OptionsRegion.Position.Y + OptionsRegion.Size.Y
-				ItemData._IsHovered = IsInsideOptionsRegion and IsPointInsideRectangle(CurrentMousePosition, ItemRegionPosition, ItemRegionSize)
+					and ItemRegionPosition.Y >= OptionsRegion.Position.Y
+					and ItemRegionPosition.Y + Theme.ElementHeight <= OptionsRegion.Position.Y + OptionsRegion.Size.Y
+				local IsInsideSectionViewport = DropdownSection and IsElementFullyVisibleInViewport(
+					ItemRegionPosition.Y,
+					Theme.ElementHeight,
+					DropdownSection,
+					Window,
+					Window._Position.Y
+				)
+				ItemData._IsHovered = IsInsideOptionsRegion
+					and IsInsideSectionViewport
+					and IsPointInsideRectangle(CurrentMousePosition, ItemRegionPosition, ItemRegionSize)
 				if ItemData.BackgroundDrawing then
 					ApplyDrawingProperties(ItemData.BackgroundDrawing, {
 						Color = ItemData._IsHovered and Theme.DropdownItemHover or Theme.DropdownItemBackground,
@@ -6849,7 +7202,7 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 	end
 
-	local HeartbeatConnection = HeartbeatSignalConnect(RunService.Heartbeat, NewCClosure(function(DeltaTime)
+	local InterfaceFrameConnection = InterfaceFrameSignalConnect(InterfaceFrameSignal, NewCClosure(function(DeltaTime)
 		if Window._Destroyed then return end
 		if not Window._Visible and PrimaryMouseButtonHeld then
 			-- A keyboard hide or external visibility change can occur while a finger
@@ -7024,6 +7377,7 @@ function Library:CreateWindow(WindowConfiguration)
 						Window._ScrollOffset = math.clamp(TargetScroll, 0, Window._MaxScroll)
 
 						Window._HighlightedElement = TargetElement
+						Window._HighlightedSection = TargetSection
 						TargetElement._HighlightTime = tick()
 
 						SetSearchActive(false, true)
@@ -7107,15 +7461,25 @@ function Library:CreateWindow(WindowConfiguration)
 
 			if Window._ActiveDropdown then
 				local ExpandedDropdown = Window._ActiveDropdown
+				local DropdownSection = ExpandedDropdown._Section
 
 				for ItemIndex, ItemData in ipairs(ExpandedDropdown._ItemDrawingObjects) do
 					local OptionsRegion = ExpandedDropdown._OptionsRegion
 					local ItemRegionPosition = Vector2.new(Window._Position.X + ItemData._PositionX, Window._Position.Y + ItemData._PositionY - Window._ScrollOffset)
 					local ItemRegionSize = Vector2.new(ItemData._Width, Theme.ElementHeight)
 					local IsInsideOptionsRegion = OptionsRegion
-						and ItemRegionPosition.Y + Theme.ElementHeight > OptionsRegion.Position.Y
-						and ItemRegionPosition.Y < OptionsRegion.Position.Y + OptionsRegion.Size.Y
-					if IsInsideOptionsRegion and IsPointInsideRectangle(CurrentMousePosition, ItemRegionPosition, ItemRegionSize) then
+						and ItemRegionPosition.Y >= OptionsRegion.Position.Y
+						and ItemRegionPosition.Y + Theme.ElementHeight <= OptionsRegion.Position.Y + OptionsRegion.Size.Y
+					local IsInsideSectionViewport = DropdownSection and IsElementFullyVisibleInViewport(
+						ItemRegionPosition.Y,
+						Theme.ElementHeight,
+						DropdownSection,
+						Window,
+						Window._Position.Y
+					)
+					if IsInsideOptionsRegion
+						and IsInsideSectionViewport
+						and IsPointInsideRectangle(CurrentMousePosition, ItemRegionPosition, ItemRegionSize) then
 						ExpandedDropdown:SetValue(ItemData.Value)
 						ExpandedDropdown:Toggle()
 						return
@@ -7245,7 +7609,7 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 	end)))
 
-	table.insert(Window._Connections, HeartbeatConnection)
+	table.insert(Window._Connections, InterfaceFrameConnection)
 	table.insert(Library._Windows, Window)
 
 	if UseImmediateMode and DrawingImmediateGetPaint then
@@ -7751,15 +8115,29 @@ function Library:CreateWindow(WindowConfiguration)
 								local SuggestionRowHeight = 22
 								local SuggestionPosition = Vector2.new(ElementPosition.X, ElementYPosition + TextBoxBaseHeight + 2)
 								local SuggestionSize = Vector2.new(ElementSize.X, SuggestionRowHeight * SuggestionCount)
-								Element._SuggestionDropdownRegion = { Position = SuggestionPosition, Size = SuggestionSize }
+								local ClippedSuggestionPosition, ClippedSuggestionSize = ClipRectangleToYRange(
+									SuggestionPosition,
+									SuggestionSize,
+									AllowedMinY,
+									AllowedMaxY
+								)
+								Element._SuggestionDropdownRegion = ClippedSuggestionPosition and {
+									Position = ClippedSuggestionPosition,
+									Size = ClippedSuggestionSize,
+								} or nil
 
-								DrawingImmediateFilledRectangle(SuggestionPosition, SuggestionSize, Theme.DropdownBackground, 0.98, 0)
-								DrawingImmediateRectangle(SuggestionPosition, SuggestionSize, Theme.DropdownBorder, 0.85, 0, 1)
+								if ClippedSuggestionPosition and ClippedSuggestionSize then
+									DrawingImmediateFilledRectangle(ClippedSuggestionPosition, ClippedSuggestionSize, Theme.DropdownBackground, 0.98, 0)
+									DrawingImmediateRectangle(ClippedSuggestionPosition, ClippedSuggestionSize, Theme.DropdownBorder, 0.85, 0, 1)
+								end
 
 								for SuggestionIndex = 1, SuggestionCount do
 									local SuggestionText = Element._Suggestions[SuggestionIndex]
 									local SuggestionY = SuggestionPosition.Y + (SuggestionIndex - 1) * SuggestionRowHeight
-									if (Element._HoveredSuggestionIndex or Element._KeyboardSuggestionIndex) == SuggestionIndex then
+									local SuggestionRowIsVisible = SuggestionY >= AllowedMinY
+										and SuggestionY + SuggestionRowHeight <= AllowedMaxY
+									if SuggestionRowIsVisible
+										and (Element._HoveredSuggestionIndex or Element._KeyboardSuggestionIndex) == SuggestionIndex then
 										DrawingImmediateFilledRectangle(
 											Vector2.new(SuggestionPosition.X, SuggestionY),
 											Vector2.new(SuggestionSize.X, SuggestionRowHeight),
@@ -7769,18 +8147,20 @@ function Library:CreateWindow(WindowConfiguration)
 										)
 									end
 
-									local SuggestionCharacterWidth = Theme.ElementFontSize * Theme.FontCharWidthRatio * 1.25
-									local SuggestionMaximumCharacters = math.max(1, math.floor((SuggestionSize.X - 16) / SuggestionCharacterWidth))
-									local DisplaySuggestionText = TruncateTextWithAsciiEllipsis(SuggestionText, SuggestionMaximumCharacters)
-									DrawingImmediateText(
-										Vector2.new(SuggestionPosition.X + 8, SuggestionY + (SuggestionRowHeight - Theme.ElementFontSize) / 2),
-										Theme.Font,
-										Theme.ElementFontSize,
-										(Element._HoveredSuggestionIndex or Element._KeyboardSuggestionIndex) == SuggestionIndex and Theme.TitleBarTextHover or Theme.DropdownText,
-										1,
-										DisplaySuggestionText,
-										false
-									)
+									if SuggestionRowIsVisible then
+										local SuggestionCharacterWidth = Theme.ElementFontSize * Theme.FontCharWidthRatio * 1.25
+										local SuggestionMaximumCharacters = math.max(1, math.floor((SuggestionSize.X - 16) / SuggestionCharacterWidth))
+										local DisplaySuggestionText = TruncateTextWithAsciiEllipsis(SuggestionText, SuggestionMaximumCharacters)
+										DrawingImmediateText(
+											Vector2.new(SuggestionPosition.X + 8, SuggestionY + (SuggestionRowHeight - Theme.ElementFontSize) / 2),
+											Theme.Font,
+											Theme.ElementFontSize,
+											(Element._HoveredSuggestionIndex or Element._KeyboardSuggestionIndex) == SuggestionIndex and Theme.TitleBarTextHover or Theme.DropdownText,
+											1,
+											DisplaySuggestionText,
+											false
+										)
+									end
 								end
 							else
 								Element._SuggestionDropdownRegion = nil
@@ -8327,7 +8707,10 @@ function Library:CreateWindow(WindowConfiguration)
 		-- of stretching past the viewport. The upper clamp prevents oversized
 		-- monitors from making text and controls feel inflated.
 		local RawScale = math.min(Viewport.X / 1920, Viewport.Y / 1080)
-		local MinimumScale = Window._TouchInputAvailable and 0.78 or 0.82
+		-- Personal computers retain the authored type and control dimensions. Their
+		-- windows are already resizable, so reducing every token on a 1680-wide
+		-- viewport only made the interface look miniature and harder to operate.
+		local MinimumScale = Window._TouchInputAvailable and 0.78 or 1
 		local Scale = math.clamp(RawScale, MinimumScale, 1.35)
 		Window._CurrentViewportScale = Scale
 
@@ -8382,6 +8765,16 @@ function Library:CreateWindow(WindowConfiguration)
 		Window:RecalculateLayout()
 	end))
 	table.insert(Window._Connections, CameraConnection)
+
+	if Window._TouchInputAvailable then
+		-- Roblox can rebuild the top bar after orientation, chat, menu, or safe-area
+		-- changes without changing the camera viewport. Track TopbarInset directly
+		-- so the retained launcher follows the panel just as immediate mode does.
+		local TopbarInsetConnection = GraphicalUserInterfaceService:GetPropertyChangedSignal("TopbarInset"):Connect(NewCClosure(function()
+			Window:UpdateTouchLauncherDrawings()
+		end))
+		table.insert(Window._Connections, TopbarInsetConnection)
+	end
 
 	ConnectViewport()
 	UpdateViewportScale()
@@ -8534,7 +8927,6 @@ function Library:SetInputBlocking(Type, Enabled)
 				Enum.UserInputType.MouseButton1,
 				Enum.UserInputType.MouseButton2,
 				Enum.UserInputType.MouseButton3,
-				Enum.UserInputType.MouseMovement,
 				Enum.UserInputType.MouseWheel
 			)
 		elseif Type == "Camera" then
@@ -8544,7 +8936,6 @@ function Library:SetInputBlocking(Type, Enabled)
 				end
 				return Enum.ContextActionResult.Sink
 			end, false, Priority,
-				Enum.UserInputType.MouseMovement,
 				Enum.UserInputType.MouseButton2,
 				Enum.UserInputType.MouseWheel
 			)

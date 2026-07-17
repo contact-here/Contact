@@ -113,7 +113,7 @@ do
 	end
 end
 
-local UserInputService, RunService, ContextActionService, Workspace
+local UserInputService, RunService, ContextActionService, GraphicalUserInterfaceService, Workspace
 local DrawingLibrary = Drawing
 local DataModel = CloneReference(game)
 local GetService = CloneFunction(DataModel.GetService)
@@ -134,12 +134,14 @@ do
 	UserInputService     = CloneReference(GetService(DataModel, "UserInputService"))
 	RunService           = CloneReference(GetService(DataModel, "RunService"))
 	ContextActionService = CloneReference(GetService(DataModel, "ContextActionService"))
+	GraphicalUserInterfaceService = CloneReference(GetService(DataModel, "GuiService"))
 	Workspace            = CloneReference(GetService(DataModel, "Workspace"))
 end
 
 local GetMouseLocation, IsMouseButtonPressed, IsKeyDown
 local GetStringForKeyCode, GetKeysPressed, GetMouseButtonsPressed
 local GetDeviceType
+local GetGraphicalUserInterfaceInset
 local HeartbeatSignalConnect
 local BindCoreActionAtPriority, UnbindCoreAction
 local InputBeganSignalConnect, InputChangedSignalConnect, InputEndedSignalConnect
@@ -165,6 +167,7 @@ do
 	GetDeviceType            = typeof(UserInputService.GetDeviceType) == "function"
 		and CloneFunction(UserInputService.GetDeviceType)
 		or function() return "Unknown" end
+	GetGraphicalUserInterfaceInset = CloneFunction(GraphicalUserInterfaceService.GetGuiInset)
 
 	HeartbeatSignalConnect = CloneFunction(RunService.Heartbeat.Connect)
 
@@ -654,6 +657,34 @@ do
 			)
 		end
 	end
+end
+
+local function GetTouchInputCoordinateInset()
+	-- InputObject.Position on touch devices is reported in the inset-adjusted
+	-- viewport coordinate space, while Drawing and DrawingImmediate render in
+	-- full-screen coordinates. GuiService supplies the current top-left offset
+	-- between those spaces, including the dynamic Roblox top bar on mobile.
+	local InsetReadSucceeded, TopLeftInset = pcall(
+		GetGraphicalUserInterfaceInset,
+		GraphicalUserInterfaceService
+	)
+	if InsetReadSucceeded and typeof(TopLeftInset) == "Vector2" then
+		return TopLeftInset
+	end
+
+	return Vector2.new(0, 0)
+end
+
+local function GetTouchInputScreenPosition(InputObject, CoordinateInset)
+	-- Keep every touch consumer on one conversion path. This prevents tabs,
+	-- ordinary elements, title dragging, and the resize corner from developing
+	-- different hitbox offsets when Roblox changes its top-bar geometry.
+	local RawInputPosition = InputObject.Position
+	local ScreenCoordinateInset = CoordinateInset or GetTouchInputCoordinateInset()
+	return Vector2.new(
+		RawInputPosition.X + ScreenCoordinateInset.X,
+		RawInputPosition.Y + ScreenCoordinateInset.Y
+	)
 end
 
 -- The following helpers derive all text measurements from Theme ratios. That
@@ -2373,6 +2404,7 @@ function Library:CreateWindow(WindowConfiguration)
 		StartPosition = nil,
 		PreviousPosition = nil,
 		CurrentPosition = nil,
+		CoordinateInset = nil,
 		StartWindowPosition = nil,
 		StartWindowSize = nil,
 		GestureDistance = 0,
@@ -6269,7 +6301,11 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		local TouchInteractionState = Window._TouchInteractionState
-		local PointerPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
+		local CoordinateInset = InputState == Enum.UserInputState.Begin
+			and GetTouchInputCoordinateInset()
+			or TouchInteractionState.CoordinateInset
+			or GetTouchInputCoordinateInset()
+		local PointerPosition = GetTouchInputScreenPosition(InputObject, CoordinateInset)
 
 		if InputState == Enum.UserInputState.Begin then
 			-- One window interaction owns one finger. Additional fingers pass through
@@ -6300,6 +6336,7 @@ function Library:CreateWindow(WindowConfiguration)
 			TouchInteractionState.StartPosition = PointerPosition
 			TouchInteractionState.PreviousPosition = PointerPosition
 			TouchInteractionState.CurrentPosition = PointerPosition
+			TouchInteractionState.CoordinateInset = CoordinateInset
 			TouchInteractionState.StartWindowPosition = Window._Position
 			TouchInteractionState.StartWindowSize = Vector2.new(Theme.WindowWidth, Window._VisibleHeight)
 			TouchInteractionState.GestureDistance = 0
@@ -6396,6 +6433,7 @@ function Library:CreateWindow(WindowConfiguration)
 		TouchInteractionState.StartPosition = nil
 		TouchInteractionState.PreviousPosition = nil
 		TouchInteractionState.CurrentPosition = nil
+		TouchInteractionState.CoordinateInset = nil
 		TouchInteractionState.StartWindowPosition = nil
 		TouchInteractionState.StartWindowSize = nil
 		TouchInteractionState.GestureDistance = 0
@@ -8443,7 +8481,7 @@ function Library:SetInputBlocking(Type, Enabled)
 					return Enum.ContextActionResult.Pass
 				end
 
-				local PointerPosition = Vector2.new(InputObject.Position.X, InputObject.Position.Y)
+				local PointerPosition = GetTouchInputScreenPosition(InputObject)
 				for RequestedWindow, RequestTable in pairs(Library._InputBlockingRequests) do
 					if RequestTable.TouchInterface and RequestedWindow and not RequestedWindow._Destroyed then
 						-- Route the touch through the same high-priority action that blocks

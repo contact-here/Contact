@@ -998,15 +998,26 @@ GetTextBoxLayoutMetrics = function(Element, TextBoxPosition, TextBoxWidth)
 	local SafeWidth = math.max(1, tonumber(TextBoxWidth) or 1)
 	local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 	local HorizontalInset = math.max(6, FontHorizontalInset(Theme.ElementFontSize))
+	local InlineInputGap = math.max(12, HorizontalInset + 4)
 	local LabelText = Element._Text and tostring(Element._Text) or ""
 	local LabelDisplayText = LabelText ~= "" and string.format("%s:", LabelText) or ""
-	local EstimatedLabelWidth = #LabelDisplayText * CharacterWidth
-	local MinimumInputWidth = math.max(CharacterWidth * 10, SafeWidth * 0.34)
+	-- Plex is slightly wider than the editable cursor grid. Account for that
+	-- difference when positioning the value so labels such as "Target jump
+	-- velocity:" cannot visually touch or overlap the first entered character.
+	local LabelCharacterWidth = CharacterWidth * 1.15
+	local EstimatedLabelWidth = #LabelDisplayText * LabelCharacterWidth
+	-- Eight editable characters are sufficient for compact numeric controls.
+	-- Keeping this threshold modest preserves the familiar single-row layout,
+	-- while genuinely long labels still switch to the safer stacked layout.
+	local MinimumInputWidth = math.max(CharacterWidth * 8, SafeWidth * 0.24)
 	local ForceStackedLayout = Element._TextBoxLayout == "Stacked"
 	local ForceInlineLayout = Element._TextBoxLayout == "Inline"
 	local UsesStackedLayout = not ForceInlineLayout
 		and LabelDisplayText ~= ""
-		and (ForceStackedLayout or EstimatedLabelWidth + MinimumInputWidth + HorizontalInset * 3 > SafeWidth)
+		and (
+			ForceStackedLayout
+			or EstimatedLabelWidth + MinimumInputWidth + HorizontalInset * 2 + InlineInputGap > SafeWidth
+		)
 
 	local BaseHeight = Theme.ElementHeight
 	local LabelPosition = TextBoxPosition + Vector2.new(HorizontalInset, (Theme.ElementHeight - Theme.ElementFontSize) / 2)
@@ -1021,13 +1032,13 @@ GetTextBoxLayoutMetrics = function(Element, TextBoxPosition, TextBoxWidth)
 	else
 		InputStartX = TextBoxPosition.X + HorizontalInset
 		if LabelDisplayText ~= "" then
-			InputStartX = InputStartX + EstimatedLabelWidth + HorizontalInset
+			InputStartX = InputStartX + EstimatedLabelWidth + InlineInputGap
 		end
 	end
 
 	local AvailableInputWidth = math.max(CharacterWidth, TextBoxPosition.X + SafeWidth - InputStartX - HorizontalInset)
 	local MaximumCharacters = math.max(1, math.floor(AvailableInputWidth / CharacterWidth))
-	local MaximumLabelCharacters = math.max(1, math.floor((SafeWidth - HorizontalInset * 2) / CharacterWidth))
+	local MaximumLabelCharacters = math.max(1, math.floor((SafeWidth - HorizontalInset * 2) / LabelCharacterWidth))
 
 	return {
 		BaseHeight = BaseHeight,
@@ -3553,23 +3564,6 @@ function Library:CreateWindow(WindowConfiguration)
 							local PipColor = Theme.ToggleInactive:Lerp(Theme.ToggleActive, Element._ActiveFactor or 0)
 							ApplyDrawingProperties(Element._IndicatorDrawing, { Position = Vector2.new(PipX, PipY), Color = PipColor, Visible = IsElementVisible })
 						end
-
-						if Element._AccentLineDrawing then
-							local AccentFrom = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + 3)
-							local AccentTo = Vector2.new(ElementAbsolutePosition.X, ElementAbsolutePosition.Y + Element._Height - 3)
-							local AllowedMinY, AllowedMaxY = GetSectionAllowedYRange(Section, Window, WindowPosition.Y)
-							local ClippedFrom, ClippedTo = ClipVerticalLineToYRange(AccentFrom, AccentTo, AllowedMinY, AllowedMaxY)
-							if ClippedFrom and ClippedTo and (Element._ActiveFactor or 0) > 0.01 then
-								ApplyDrawingProperties(Element._AccentLineDrawing, {
-									From = ClippedFrom,
-									To = ClippedTo,
-									Transparency = Element._ActiveFactor or 0,
-									Visible = IsElementVisible,
-								})
-							else
-								ApplyDrawingProperties(Element._AccentLineDrawing, { Visible = false })
-							end
-						end
 					elseif Element._Type == "TextBox" then
 						local TextBoxMetrics = GetTextBoxLayoutMetrics(Element, ElementAbsolutePosition, ElementAbsoluteSize.X)
 						local TextBoxBaseHeight = TextBoxMetrics.BaseHeight
@@ -5485,14 +5479,6 @@ function Library:CreateWindow(WindowConfiguration)
 					Visible = false,
 					Color = ToggleConfiguration.Default and Theme.ToggleActive or Theme.ToggleInactive,
 				})
-				Element._AccentLineDrawing = CreateTrackedDrawingObject("Line")
-				ApplyDrawingProperties(Element._AccentLineDrawing, {
-					Thickness = 2,
-					Transparency = 0,
-					Color = Theme.ToggleActive,
-					ZIndex = 14,
-					Visible = false,
-				})
 			end
 
 			function Element:SetValue(NewValue, SuppressCallback, ForceCallback)
@@ -5502,9 +5488,6 @@ function Library:CreateWindow(WindowConfiguration)
 				if Element._IndicatorDrawing then
 					SetRenderProperty(Element._IndicatorDrawing, "Color",
 						NormalizedValue and Theme.ToggleActive or Theme.ToggleInactive)
-				end
-				if Element._AccentLineDrawing then
-					SetRenderProperty(Element._AccentLineDrawing, "Visible", false)
 				end
 				if not SuppressCallback and (ValueChanged or ForceCallback) then
 					InvokeCallback(Element._Callback, NormalizedValue)
@@ -8019,17 +8002,6 @@ function Library:CreateWindow(WindowConfiguration)
 								DrawingImmediateRectangle(ClippedPos, ClippedSize, Theme.ButtonBorder, 0.8, 0, 1)
 							end
 
-							if (Element._ActiveFactor or 0) > 0.01 then
-								local AccentFrom, AccentTo = ClipVerticalLineToYRange(
-									Vector2.new(ElementPosition.X, ElementYPosition + 3),
-									Vector2.new(ElementPosition.X, ElementYPosition + Element._Height - 3),
-									AllowedMinY, AllowedMaxY
-								)
-								if AccentFrom and AccentTo then
-									DrawingImmediateLine(AccentFrom, AccentTo, Theme.ToggleActive, Element._ActiveFactor or 0, 2)
-								end
-							end
-
 							local TextY = ElementYPosition + (Element._Height - Theme.ElementFontSize) / 2
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
 								local AvailableTextWidth = math.max(1, ElementSize.X - 42)
@@ -8046,7 +8018,18 @@ function Library:CreateWindow(WindowConfiguration)
 							local PipY = ElementYPosition + Element._Height / 2
 							local PipColor = Theme.ToggleInactive:Lerp(Theme.ToggleActive, Element._ActiveFactor or 0)
 							if PipY - 5 >= AllowedMinY and PipY + 5 <= AllowedMaxY then
-								DrawImmediateSolidCircle(Vector2.new(PipX, PipY), 5, PipColor, 1, 64)
+								-- Potassium builds that misrender FilledCircle as a
+								-- triangle still implement rounded rectangles
+								-- consistently. A fully rounded ten-pixel square
+								-- produces the same solid indicator without any
+								-- separate glyph inside the toggle.
+								DrawingImmediateFilledRectangle(
+									Vector2.new(PipX - 5, PipY - 5),
+									Vector2.new(10, 10),
+									PipColor,
+									1,
+									5
+								)
 							end
 						elseif Element._Type == "TextBox" then
 							local TextBoxMetrics = GetTextBoxLayoutMetrics(Element, ElementPosition, ElementSize.X)

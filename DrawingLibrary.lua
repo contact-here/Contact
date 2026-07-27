@@ -1,44 +1,55 @@
-local RawCloneReference = cloneref
-local cloneref = (RawCloneReference and function(Object) 
-    if typeof(Object) == "Instance" then 
-        return RawCloneReference(Object) 
-    end 
-    return Object 
-end) or (function(...) 
-    return ... 
-end)
-
-local RawCloneFunction = clonefunc or clonefunction
-local UseRawClone = RawCloneFunction
-if UseRawClone and debug.info(UseRawClone, "s") ~= "[C]" then
-    UseRawClone = nil
+local RawCloneReference = cloneref or clone_ref or clonereference
+local CloneReferenceIsNative = false
+if RawCloneReference then
+    local Success, Source = pcall(debug.info, RawCloneReference, "s")
+    if Success and Source == "[C]" then
+        CloneReferenceIsNative = true
+    end
 end
 
-local clonefunc = UseRawClone and function(TargetFunction)
-    if typeof(TargetFunction) == "function" then
-        return UseRawClone(TargetFunction)
+local cloneref
+if RawCloneReference and CloneReferenceIsNative then
+    cloneref = RawCloneReference
+else
+    cloneref = function(Object)
+        return Object
     end
-    return TargetFunction
-end or function(TargetFunction)
-    return TargetFunction
+end
+
+local RawCloneFunction = clonefunc or clonefunction
+local CloneIsNative = false
+if RawCloneFunction then
+    local Success, Source = pcall(debug.info, RawCloneFunction, "s")
+    if Success and Source == "[C]" then
+        CloneIsNative = true
+    end
+end
+
+local clonefunc
+if RawCloneFunction and CloneIsNative then
+    clonefunc = RawCloneFunction
+else
+    clonefunc = function(TargetFunction)
+        return TargetFunction
+    end
 end
 
 local RawNewCClosure = newcclosure
-local UseRawNewCClosure = RawNewCClosure
-if UseRawNewCClosure and debug.info(UseRawNewCClosure, "s") ~= "[C]" then
-    UseRawNewCClosure = nil
+local NewCClosureIsNative = false
+if RawNewCClosure then
+    local Success, Source = pcall(debug.info, RawNewCClosure, "s")
+    if Success and Source == "[C]" then
+        NewCClosureIsNative = true
+    end
 end
 
-local newcclosure = UseRawNewCClosure and function(TargetFunction)
-    if typeof(TargetFunction) == "function" then
-        local Success, WrappedFunction = pcall(UseRawNewCClosure, TargetFunction)
-        if Success and typeof(WrappedFunction) == "function" then
-            return WrappedFunction
-        end
+local newcclosure
+if RawNewCClosure and NewCClosureIsNative then
+    newcclosure = RawNewCClosure
+else
+    newcclosure = function(TargetFunction)
+        return TargetFunction
     end
-    return TargetFunction
-end or function(TargetFunction)
-    return TargetFunction
 end
 
 local UserInputService, CoreGui, RunService, TextService, GetService
@@ -108,7 +119,15 @@ local function CreateDrawingProxy(ObjectData, ClassMethods, UpdateCallback)
             return ObjectData.GuiObject ~= nil
         end
 
-        return ObjectData[PropertyName] or ClassMethods[PropertyName]
+        -- Preserve valid false-valued properties such as Visible, Filled,
+        -- Center, and Outline. Using boolean `or` here incorrectly replaced
+        -- false with a class member lookup and returned nil to callers.
+        local StoredPropertyValue = rawget(ObjectData, PropertyName)
+        if StoredPropertyValue ~= nil then
+            return StoredPropertyValue
+        end
+
+        return ClassMethods[PropertyName]
     end
 
     ProxyMetatable.__newindex = function(ProxySelf, PropertyName, PropertyValue)
@@ -216,6 +235,9 @@ do
         FrameInstance.BorderSizePixel = 0
         FrameInstance.BackgroundColor3 = Color3.new(0, 0, 0)
         FrameInstance.BackgroundTransparency = 0
+        FrameInstance.Position = UDim2.fromOffset(0, 0)
+        FrameInstance.Size = UDim2.fromOffset(0, 0)
+        FrameInstance.Visible = false
         FrameInstance.Parent = RootScreenGui
 
         local StrokeInstance = cloneref(Instance.new("UIStroke"))
@@ -384,6 +406,9 @@ do
         FrameInstance.BorderSizePixel = 0
         FrameInstance.BackgroundColor3 = Color3.new(0, 0, 0)
         FrameInstance.AnchorPoint = Vector2.new(0.5, 0.5)
+        FrameInstance.Position = UDim2.fromOffset(0, 0)
+        FrameInstance.Size = UDim2.fromOffset(0, 0)
+        FrameInstance.Visible = false
         FrameInstance.Parent = RootScreenGui
 
         local ObjectData = {
@@ -463,6 +488,9 @@ do
         FrameInstance.BorderSizePixel = 0
         FrameInstance.BackgroundColor3 = Color3.new(0, 0, 0)
         FrameInstance.AnchorPoint = Vector2.new(0.5, 0.5)
+        FrameInstance.Position = UDim2.fromOffset(0, 0)
+        FrameInstance.Size = UDim2.fromOffset(0, 0)
+        FrameInstance.Visible = false
         FrameInstance.Parent = RootScreenGui
 
         local UICornerInstance = cloneref(Instance.new("UICorner"))
@@ -533,6 +561,9 @@ do
         ImageLabelInstance.Name = GenerateRandomString()
         ImageLabelInstance.BorderSizePixel = 0
         ImageLabelInstance.BackgroundTransparency = 1
+        ImageLabelInstance.Position = UDim2.fromOffset(0, 0)
+        ImageLabelInstance.Size = UDim2.fromOffset(0, 0)
+        ImageLabelInstance.Visible = false
         ImageLabelInstance.Parent = RootScreenGui
 
         local ObjectData = {
@@ -583,6 +614,10 @@ do
         local FrameInstance = cloneref(Instance.new("Frame"))
         FrameInstance.Name = GenerateRandomString()
         FrameInstance.BorderSizePixel = 0
+        FrameInstance.BackgroundTransparency = 1
+        FrameInstance.Position = UDim2.fromOffset(0, 0)
+        FrameInstance.Size = UDim2.fromOffset(0, 0)
+        FrameInstance.Visible = false
         FrameInstance.Parent = RootScreenGui
 
         local ObjectData = {
@@ -628,6 +663,10 @@ do
         local FrameInstance = cloneref(Instance.new("Frame"))
         FrameInstance.Name = GenerateRandomString()
         FrameInstance.BorderSizePixel = 0
+        FrameInstance.BackgroundTransparency = 1
+        FrameInstance.Position = UDim2.fromOffset(0, 0)
+        FrameInstance.Size = UDim2.fromOffset(0, 0)
+        FrameInstance.Visible = false
         FrameInstance.Parent = RootScreenGui
 
         local ObjectData = {
@@ -693,9 +732,7 @@ local function SetRenderProperty(DrawingObject, PropertyName, PropertyValue)
         return
     end
 
-    pcall(function()
-        DrawingObject[PropertyName] = PropertyValue
-    end)
+    DrawingObject[PropertyName] = PropertyValue
 end
 
 local function GetRenderProperty(DrawingObject, PropertyName)

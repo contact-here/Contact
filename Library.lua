@@ -7,18 +7,31 @@ local CloneFunction, CloneReference, NewCClosure, SetClipboard, GetClipboard
 -- read the system clipboard back after writing to it.
 local LastCopiedText = ""
 
+-- Executor-only controls must distinguish native runtime functions from Lua
+-- compatibility shims. debug.info is part of the required baseline for this
+-- project, so every capability check can share this single implementation.
+local DebugInformation = debug.info
+
+local function IsNativeExecutorFunction(TargetFunction)
+	if typeof(TargetFunction) ~= "function" then
+		return false
+	end
+
+	local DebugInformationReadSucceeded, FunctionSource = pcall(
+		DebugInformation,
+		TargetFunction,
+		"s"
+	)
+
+	return DebugInformationReadSucceeded and FunctionSource == "[C]"
+end
+
 do
 	-- Prefer native clonefunc/clonefunction only when debug.info confirms that
 	-- the implementation is C-backed. Lua replacements are treated as unsafe
 	-- wrappers and intentionally ignored.
 	local RawCloneFunction = clonefunc or clonefunction or clone_function
-	local CloneFunctionIsNative = false
-	if RawCloneFunction then
-		local DebugInformationReadSucceeded, FunctionSource = pcall(debug.info, RawCloneFunction, "s")
-		if DebugInformationReadSucceeded and FunctionSource == "[C]" then
-			CloneFunctionIsNative = true
-		end
-	end
+	local CloneFunctionIsNative = IsNativeExecutorFunction(RawCloneFunction)
 
 	if RawCloneFunction and CloneFunctionIsNative then
 		CloneFunction = RawCloneFunction
@@ -32,13 +45,7 @@ do
 	-- cloneref prevents some environments from returning hooked Instance
 	-- references. The identity fallback is still valid in standard Luau.
 	local RawCloneReference = cloneref or clone_ref or clonereference
-	local CloneReferenceIsNative = false
-	if RawCloneReference then
-		local DebugInformationReadSucceeded, FunctionSource = pcall(debug.info, RawCloneReference, "s")
-		if DebugInformationReadSucceeded and FunctionSource == "[C]" then
-			CloneReferenceIsNative = true
-		end
-	end
+	local CloneReferenceIsNative = IsNativeExecutorFunction(RawCloneReference)
 
 	if RawCloneReference and CloneReferenceIsNative then
 		CloneReference = RawCloneReference
@@ -52,13 +59,7 @@ do
 	-- newcclosure is useful for callbacks that should look native to hooks, but
 	-- a plain Lua closure is enough when the runtime does not expose it.
 	local RawNewCClosure = newcclosure
-	local NewCClosureIsNative = false
-	if RawNewCClosure then
-		local DebugInformationReadSucceeded, FunctionSource = pcall(debug.info, RawNewCClosure, "s")
-		if DebugInformationReadSucceeded and FunctionSource == "[C]" then
-			NewCClosureIsNative = true
-		end
-	end
+	local NewCClosureIsNative = IsNativeExecutorFunction(RawNewCClosure)
 
 	if RawNewCClosure and NewCClosureIsNative then
 		NewCClosure = RawNewCClosure
@@ -238,8 +239,7 @@ local DrawingIsNative = false
 -- Native Drawing.new is preferred. When it is absent or Lua-backed, the library
 -- attempts to load a replacement Drawing implementation before falling back.
 if typeof(DrawingLibrary) == "table" and typeof(DrawingLibrary.new) == "function" then
-	local NativeCheckSuccess, NativeCheckSource = pcall(debug.info, DrawingLibrary.new, "s")
-	if NativeCheckSuccess and NativeCheckSource == "[C]" then
+	if IsNativeExecutorFunction(DrawingLibrary.new) then
 		DrawingIsNative = true
 	end
 end
@@ -539,8 +539,6 @@ Theme = {
 	SliderTrackBackground = Color3.fromRGB(18, 24, 29),
 	SliderTrackFill       = Color3.fromRGB(89, 211, 184),
 	SliderTrackFillHover  = Color3.fromRGB(136, 236, 214),
-	SliderThumb           = Color3.fromRGB(234, 244, 240),
-	SliderThumbHover      = Color3.fromRGB(255, 255, 255),
 	SliderText            = Color3.fromRGB(221, 231, 229),
 	SliderBorder          = Color3.fromRGB(55, 72, 80),
 
@@ -559,6 +557,10 @@ Theme = {
 	TooltipBackground      = Color3.fromRGB(10, 14, 18),
 	TooltipBorder          = Color3.fromRGB(86, 119, 126),
 	TooltipText            = Color3.fromRGB(226, 235, 232),
+	LockedControlBackground= Color3.fromRGB(11, 13, 17),
+	LockedControlBorder    = Color3.fromRGB(198, 76, 86),
+	LockedControlIcon      = Color3.fromRGB(238, 87, 97),
+	LockedControlText      = Color3.fromRGB(239, 224, 226),
 
 	SaveButtonBackground = Color3.fromRGB(29, 96, 78),
 	SaveButtonHover      = Color3.fromRGB(44, 132, 106),
@@ -1723,6 +1725,13 @@ Library.Connections = {}
 
 Library.Theme = Theme
 
+function Library:IsExecutorFunctionSupported(TargetFunction)
+	-- Lua wrappers can imitate an executor application programming interface
+	-- while omitting behavior that the control depends on. Only C-backed
+	-- implementations are therefore advertised as supported.
+	return IsNativeExecutorFunction(TargetFunction)
+end
+
 function Library:IsPageTabFullyInsideViewport(TabLayout, WindowPositionX, WindowWidth, TabPositionX, TabWidth)
 	-- Drawing backends do not provide a reliable clipping rectangle. A partially
 	-- visible tab would therefore paint its background and title beyond the window
@@ -2446,6 +2455,7 @@ function Library:CreateWindow(WindowConfiguration)
 	-- builds that element tree, then perform one complete pass at the end.
 	Window._LayoutBatchDepth = 0
 	Window._LayoutRecalculationPending = false
+	Window._HasCompletedLayout = false
 	Window._Destroyed = false
 	Window._Destroying = false
 	Window._TouchInputAvailable = TouchInputAvailable
@@ -2535,6 +2545,407 @@ function Library:CreateWindow(WindowConfiguration)
 			return ActivePage.Sections
 		end
 		return Window._Sections
+	end
+
+	local function NormalizeExecutorFunctionRequirements(Requirements)
+		-- A descriptor preserves the requested function name even when the
+		-- function value is nil. This is more reliable than a name-to-function
+		-- dictionary because Lua omits dictionary entries whose values are nil.
+		local NormalizedRequirements = {}
+
+		local function AppendRequirement(RequirementName, RequirementFunction)
+			local NormalizedName = tostring(RequirementName or "")
+			if NormalizedName == "" then
+				return
+			end
+
+			NormalizedRequirements[#NormalizedRequirements + 1] = {
+				Name = NormalizedName,
+				Function = RequirementFunction,
+			}
+		end
+
+		if typeof(Requirements) ~= "table" then
+			return NormalizedRequirements
+		end
+
+		if Requirements.Name ~= nil then
+			AppendRequirement(
+				Requirements.Name,
+				rawget(Requirements, "Function") or rawget(Requirements, "Value")
+			)
+			return NormalizedRequirements
+		end
+
+		local ArrayRequirementCount = #Requirements
+		for RequirementIndex = 1, ArrayRequirementCount do
+			local Requirement = Requirements[RequirementIndex]
+			if typeof(Requirement) == "string" then
+				AppendRequirement(Requirement, nil)
+			elseif typeof(Requirement) == "table" then
+				AppendRequirement(
+					Requirement.Name or Requirement[1],
+					rawget(Requirement, "Function") or rawget(Requirement, "Value") or Requirement[2]
+				)
+			end
+		end
+
+		-- Name-to-function dictionaries remain supported for functions that are
+		-- present. Missing functions should use descriptors so their names are
+		-- not discarded by Lua before this normalization pass.
+		for RequirementName, RequirementFunction in pairs(Requirements) do
+			if typeof(RequirementName) == "string" and RequirementName ~= "Name" then
+				AppendRequirement(RequirementName, RequirementFunction)
+			end
+		end
+
+		return NormalizedRequirements
+	end
+
+	local function EnsureExecutorLockDrawingObjects(Element)
+		if Element._ExecutorLockDrawingObjects
+			or UseImmediateMode
+			or not DrawingBackendAvailable then
+			return
+		end
+
+		local LockBackgroundDrawing = CreateRectangleDrawing(
+			Theme.LockedControlBackground,
+			true,
+			44,
+			0.98
+		)
+		local LockBorderDrawing = CreateRectangleDrawing(
+			Theme.LockedControlBorder,
+			false,
+			45,
+			0.95
+		)
+		local LockIconCircleDrawing = CreateTrackedDrawingObject("Circle")
+		ApplyDrawingProperties(LockIconCircleDrawing, {
+			Filled = false,
+			Radius = 8,
+			NumSides = 64,
+			Thickness = 2,
+			Transparency = 1,
+			Color = Theme.LockedControlIcon,
+			ZIndex = 46,
+			Visible = false,
+		})
+		local LockIconSlashDrawing = CreateTrackedDrawingObject("Line")
+		ApplyDrawingProperties(LockIconSlashDrawing, {
+			Thickness = 2,
+			Transparency = 1,
+			Color = Theme.LockedControlIcon,
+			ZIndex = 47,
+			Visible = false,
+		})
+		local LockTextDrawing = CreateTextDrawing(
+			"",
+			Theme.ElementFontSize,
+			Theme.LockedControlText,
+			47
+		)
+
+		Element._ExecutorLockDrawingObjects = {
+			LockBackgroundDrawing,
+			LockBorderDrawing,
+			LockIconCircleDrawing,
+			LockIconSlashDrawing,
+			LockTextDrawing,
+		}
+		Element._ExecutorLockBackgroundDrawing = LockBackgroundDrawing
+		Element._ExecutorLockBorderDrawing = LockBorderDrawing
+		Element._ExecutorLockIconCircleDrawing = LockIconCircleDrawing
+		Element._ExecutorLockIconSlashDrawing = LockIconSlashDrawing
+		Element._ExecutorLockTextDrawing = LockTextDrawing
+		SetDrawingObjectsVisibility(Element._ExecutorLockDrawingObjects, false)
+	end
+
+	local function RefreshExecutorRequirementTooltip(Element)
+		local BaseTooltip = tostring(Element._BaseTooltip or "")
+		if Element._IsLocked then
+			local LockExplanation = tostring(
+				Element._ExecutorLockMessage
+				or "This control is unavailable on the current executor."
+			)
+			Element._Tooltip = BaseTooltip ~= ""
+				and string.format("%s\n\n%s", BaseTooltip, LockExplanation)
+				or LockExplanation
+		else
+			Element._Tooltip = BaseTooltip
+		end
+		Element._TooltipHoverStartedAt = nil
+	end
+
+	local function ConfigureElementExecutorRequirements(Element, ElementConfiguration)
+		Element._RequiredExecutorFunctions = {}
+		Element._MissingExecutorFunctionNames = {}
+		Element._IsLocked = false
+		Element._BaseTooltip = tostring(Element._Tooltip or "")
+
+		local OriginalSetTooltip = Element.SetTooltip
+		function Element:SetTooltip(NewTooltip)
+			Element._BaseTooltip = tostring(NewTooltip or "")
+			if OriginalSetTooltip then
+				OriginalSetTooltip(Element, Element._BaseTooltip)
+			end
+			RefreshExecutorRequirementTooltip(Element)
+		end
+
+		function Element:GetMissingExecutorFunctionNames()
+			local MissingFunctionNames = {}
+			for MissingFunctionIndex, MissingFunctionName in ipairs(Element._MissingExecutorFunctionNames) do
+				MissingFunctionNames[MissingFunctionIndex] = MissingFunctionName
+			end
+			return MissingFunctionNames
+		end
+
+		function Element:IsLocked()
+			return Element._IsLocked == true
+		end
+
+		function Element:SetRequiredExecutorFunctions(NewRequirements, SuppressLayout)
+			Element._RequiredExecutorFunctions = NormalizeExecutorFunctionRequirements(NewRequirements)
+			local MissingFunctionNames = {}
+
+			for RequirementIndex, Requirement in ipairs(Element._RequiredExecutorFunctions) do
+				if not IsNativeExecutorFunction(Requirement.Function) then
+					MissingFunctionNames[#MissingFunctionNames + 1] = Requirement.Name
+				end
+			end
+
+			table.sort(MissingFunctionNames)
+			Element._MissingExecutorFunctionNames = MissingFunctionNames
+			Element._IsLocked = #MissingFunctionNames > 0
+
+			if Element._IsLocked then
+				local MissingFunctionList = table.concat(MissingFunctionNames, ", ")
+				Element._ExecutorLockMessage = string.format(
+					"Executor does not support the required function%s: %s.",
+					#MissingFunctionNames == 1 and "" or "s",
+					MissingFunctionList
+				)
+				Element._ExecutorLockDisplayText = string.format(
+					"Executor does not support: %s",
+					MissingFunctionList
+				)
+				EnsureExecutorLockDrawingObjects(Element)
+
+				-- Locking an already active control also closes any transient
+				-- interaction state so an inaccessible callback cannot remain
+				-- reachable through a previously opened popup or text focus.
+				if Element._Expanded then
+					Element._Expanded = false
+					Element._OptionsRegion = nil
+					if Window._ActiveDropdown == Element then
+						Window._ActiveDropdown = nil
+					end
+					for ItemIndex, ItemData in ipairs(Element._ItemDrawingObjects or {}) do
+						SetDrawingObjectsVisibility({
+							ItemData.BackgroundDrawing,
+							ItemData.TextDrawing,
+							ItemData.SeparatorDrawing,
+						}, false)
+					end
+				end
+
+				if Element._IsFocused then
+					Element._IsFocused = false
+					Element._IsSelected = false
+					Element._SelectionDragging = false
+					Window:SetInputBlocking("Typing", false)
+				end
+
+				if Window._ActiveColorPicker == Element and Element.ClosePopup then
+					Element:ClosePopup()
+				end
+			else
+				Element._ExecutorLockMessage = nil
+				Element._ExecutorLockDisplayText = nil
+				if Element._ExecutorLockDrawingObjects then
+					SetDrawingObjectsVisibility(Element._ExecutorLockDrawingObjects, false)
+				end
+			end
+
+			RefreshExecutorRequirementTooltip(Element)
+
+			if not SuppressLayout then
+				Window:RecalculateLayout()
+			end
+		end
+
+		Element:SetRequiredExecutorFunctions(
+			ElementConfiguration and ElementConfiguration.RequiredExecutorFunctions,
+			true
+		)
+	end
+
+	local function UpdateRetainedExecutorLock(
+		Element,
+		ElementAbsolutePosition,
+		ElementAbsoluteSize,
+		IsElementVisible,
+		Section
+	)
+		local LockDrawingObjects = Element._ExecutorLockDrawingObjects
+		if not LockDrawingObjects then
+			return
+		end
+
+		local ShouldRenderLock = Element._IsLocked and IsElementVisible and Window._Visible
+		if not ShouldRenderLock then
+			SetDrawingObjectsVisibility(LockDrawingObjects, false)
+			return
+		end
+
+		local AllowedMinimumPositionY, AllowedMaximumPositionY = GetSectionAllowedYRange(
+			Section,
+			Window,
+			Window._Position.Y
+		)
+		local ClippedLockPosition, ClippedLockSize = ClipRectangleToYRange(
+			ElementAbsolutePosition,
+			ElementAbsoluteSize,
+			AllowedMinimumPositionY,
+			AllowedMaximumPositionY
+		)
+		if not ClippedLockPosition or not ClippedLockSize then
+			SetDrawingObjectsVisibility(LockDrawingObjects, false)
+			return
+		end
+
+		ApplyDrawingProperties(Element._ExecutorLockBackgroundDrawing, {
+			Position = ClippedLockPosition,
+			Size = ClippedLockSize,
+			Color = Theme.LockedControlBackground,
+			Visible = true,
+		})
+		ApplyDrawingProperties(Element._ExecutorLockBorderDrawing, {
+			Position = ClippedLockPosition,
+			Size = ClippedLockSize,
+			Color = Theme.LockedControlBorder,
+			Visible = true,
+		})
+
+		local IconRadius = math.min(8, math.max(5, ClippedLockSize.Y * 0.25))
+		local IconCenter = Vector2.new(
+			ClippedLockPosition.X + 14,
+			ClippedLockPosition.Y + ClippedLockSize.Y / 2
+		)
+		ApplyDrawingProperties(Element._ExecutorLockIconCircleDrawing, {
+			Position = IconCenter,
+			Radius = IconRadius,
+			Color = Theme.LockedControlIcon,
+			Visible = true,
+		})
+		ApplyDrawingProperties(Element._ExecutorLockIconSlashDrawing, {
+			From = IconCenter - Vector2.new(IconRadius * 0.7, IconRadius * 0.7),
+			To = IconCenter + Vector2.new(IconRadius * 0.7, IconRadius * 0.7),
+			Color = Theme.LockedControlIcon,
+			Visible = true,
+		})
+
+		local AvailableTextWidth = math.max(1, ClippedLockSize.X - 38)
+		local MaximumCharacters = math.max(
+			1,
+			math.floor(AvailableTextWidth / GetEditableTextCharacterWidth(Theme.ElementFontSize))
+		)
+		local DisplayText = TruncateTextWithAsciiEllipsis(
+			Element._ExecutorLockDisplayText or "Executor capability unavailable",
+			MaximumCharacters
+		)
+		ApplyDrawingProperties(Element._ExecutorLockTextDrawing, {
+			Text = DisplayText,
+			Position = Vector2.new(
+				ClippedLockPosition.X + 30,
+				ClippedLockPosition.Y + (ClippedLockSize.Y - Theme.ElementFontSize) / 2
+			),
+			Size = Theme.ElementFontSize,
+			Color = Theme.LockedControlText,
+			Visible = true,
+		})
+	end
+
+	local function DrawImmediateExecutorLock(
+		Element,
+		ElementPosition,
+		ElementSize,
+		AllowedMinimumPositionY,
+		AllowedMaximumPositionY
+	)
+		if not Element._IsLocked then
+			return
+		end
+
+		local ClippedLockPosition, ClippedLockSize = ClipRectangleToYRange(
+			ElementPosition,
+			ElementSize,
+			AllowedMinimumPositionY,
+			AllowedMaximumPositionY
+		)
+		if not ClippedLockPosition or not ClippedLockSize then
+			return
+		end
+
+		DrawingImmediateFilledRectangle(
+			ClippedLockPosition,
+			ClippedLockSize,
+			Theme.LockedControlBackground,
+			0.98,
+			0
+		)
+		DrawingImmediateRectangle(
+			ClippedLockPosition,
+			ClippedLockSize,
+			Theme.LockedControlBorder,
+			0.95,
+			0,
+			1
+		)
+
+		local IconRadius = math.min(8, math.max(5, ClippedLockSize.Y * 0.25))
+		local IconCenter = Vector2.new(
+			ClippedLockPosition.X + 14,
+			ClippedLockPosition.Y + ClippedLockSize.Y / 2
+		)
+		DrawingImmediateCircle(
+			IconCenter,
+			IconRadius,
+			Theme.LockedControlIcon,
+			1,
+			64,
+			2
+		)
+		DrawingImmediateLine(
+			IconCenter - Vector2.new(IconRadius * 0.7, IconRadius * 0.7),
+			IconCenter + Vector2.new(IconRadius * 0.7, IconRadius * 0.7),
+			Theme.LockedControlIcon,
+			1,
+			2
+		)
+
+		local AvailableTextWidth = math.max(1, ClippedLockSize.X - 38)
+		local MaximumCharacters = math.max(
+			1,
+			math.floor(AvailableTextWidth / GetEditableTextCharacterWidth(Theme.ElementFontSize))
+		)
+		local DisplayText = TruncateTextWithAsciiEllipsis(
+			Element._ExecutorLockDisplayText or "Executor capability unavailable",
+			MaximumCharacters
+		)
+		DrawingImmediateText(
+			Vector2.new(
+				ClippedLockPosition.X + 30,
+				ClippedLockPosition.Y + (ClippedLockSize.Y - Theme.ElementFontSize) / 2
+			),
+			Theme.Font,
+			Theme.ElementFontSize,
+			Theme.LockedControlText,
+			1,
+			DisplayText,
+			false
+		)
 	end
 
 	Window.OnSave = function() end
@@ -3235,6 +3646,11 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
+		if Window._LayoutBatchDepth == 0 then
+			-- Input and animation processing must not inspect sections while their
+			-- coordinates are intentionally deferred by the construction batch.
+			Window._HasCompletedLayout = false
+		end
 		Window._LayoutBatchDepth = Window._LayoutBatchDepth + 1
 	end
 
@@ -3247,6 +3663,8 @@ function Library:CreateWindow(WindowConfiguration)
 		if Window._LayoutBatchDepth == 0 and Window._LayoutRecalculationPending then
 			Window._LayoutRecalculationPending = false
 			Window:RecalculateLayout()
+		elseif Window._LayoutBatchDepth == 0 then
+			Window._HasCompletedLayout = true
 		end
 	end
 
@@ -3261,7 +3679,10 @@ function Library:CreateWindow(WindowConfiguration)
 
 		Window._LayoutRecalculationPending = false
 		RepositionNotificationStack(Window._ActiveNotifications, Window._Position)
-		if not DrawingBackendAvailable then return end
+		if not DrawingBackendAvailable then
+			Window._HasCompletedLayout = true
+			return
+		end
 
 		local WindowPosition = Window._Position
 		local ViewportStart, ViewportEnd = GetWindowContentViewportYRange(Window, WindowPosition.Y)
@@ -3321,13 +3742,16 @@ function Library:CreateWindow(WindowConfiguration)
 							SetDrawingObjectsVisibility({
 								Element._LabelDrawing, Element._ValueTextDrawing,
 								Element._TrackBackgroundDrawing, Element._TrackBorderDrawing,
-								Element._TrackFillDrawing, Element._ThumbDrawing, Element._ThumbInnerDrawing,
+								Element._TrackFillDrawing, Element._ThumbDrawing,
 							}, false)
 						elseif Element._Type == "ColorPicker" then
 							SetDrawingObjectsVisibility({ Element._LabelDrawing, Element._SwatchDrawing, Element._SwatchBorderDrawing }, false)
 							if Element._HoverBackgroundDrawing then SetRenderProperty(Element._HoverBackgroundDrawing, "Visible", false) end
 							if Element._AccentLineDrawing then SetRenderProperty(Element._AccentLineDrawing, "Visible", false) end
 							if Element._ChevronDrawing then SetRenderProperty(Element._ChevronDrawing, "Visible", false) end
+						end
+						if Element._ExecutorLockDrawingObjects then
+							SetDrawingObjectsVisibility(Element._ExecutorLockDrawingObjects, false)
 						end
 					end
 				end
@@ -3892,21 +4316,16 @@ function Library:CreateWindow(WindowConfiguration)
 							})
 						end
 						local ThumbRadius = LerpValue(7, 9, Element._ThumbHoverFactor or 0)
-						local ThumbColor = Theme.SliderThumb:Lerp(Theme.SliderThumbHover, Element._ThumbHoverFactor or 0)
+						local ThumbColor = Theme.SliderTrackFill:Lerp(
+							Theme.SliderTrackFillHover,
+							Element._ThumbHoverFactor or 0
+						)
 						local ThumbCenter = TrackAbsolutePosition + Vector2.new(FillWidth, TrackHeight / 2)
 						if Element._ThumbDrawing then
 							ApplyDrawingProperties(Element._ThumbDrawing, {
 								Position = ThumbCenter,
 								Radius = ThumbRadius,
 								Color = ThumbColor,
-								Visible = IsElementVisible,
-							})
-						end
-
-						if Element._ThumbInnerDrawing then
-							ApplyDrawingProperties(Element._ThumbInnerDrawing, {
-								Position = ThumbCenter,
-								Color = FillColor,
 								Visible = IsElementVisible,
 							})
 						end
@@ -3978,6 +4397,13 @@ function Library:CreateWindow(WindowConfiguration)
 							})
 						end
 					end
+					UpdateRetainedExecutorLock(
+						Element,
+						ElementAbsolutePosition,
+						ElementAbsoluteSize,
+						IsElementVisible,
+						Section
+					)
 				end
 			end
 
@@ -4652,6 +5078,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Window:RecalculateLayout()
 			Window._ApplyingScrollbarLayoutCorrection = false
 		end
+		Window._HasCompletedLayout = true
 	end
 
 	local function UpdateElementsVisibility()
@@ -4732,7 +5159,6 @@ function Library:CreateWindow(WindowConfiguration)
 							Element._TrackBorderDrawing,
 							Element._TrackFillDrawing,
 							Element._ThumbDrawing,
-							Element._ThumbInnerDrawing,
 						}, false)
 					elseif Element._Type == "ColorPicker" then
 						SetDrawingObjectsVisibility({
@@ -4746,6 +5172,9 @@ function Library:CreateWindow(WindowConfiguration)
 						if Window._ActiveColorPicker == Element then
 							Element:ClosePopup()
 						end
+					end
+					if Element._ExecutorLockDrawingObjects then
+						SetDrawingObjectsVisibility(Element._ExecutorLockDrawingObjects, false)
 					end
 				end
 			end
@@ -5051,8 +5480,15 @@ function Library:CreateWindow(WindowConfiguration)
 		local Section = {}
 		Section._Title = SectionConfiguration.Title
 		Section._Elements = {}
+		-- Geometry receives harmless defaults immediately because a PreRender
+		-- frame or pointer event may arrive while a batched interface is still
+		-- constructing its section tree. RecalculateLayout replaces these values
+		-- with the final column geometry before the section becomes interactive.
+		Section._PositionX = 0
 		Section._PositionY = 0
 		Section._Width = 0
+		Section._ContentHeight = 0
+		Section._FullContentHeight = 0
 		Section._IsHovered = false
 		-- Keep the authored limit separately from its scaled screen-space value.
 		-- A viewport change can then rebuild every section limit from the original
@@ -5087,7 +5523,7 @@ function Library:CreateWindow(WindowConfiguration)
 				Transparency = 0.7,
 				Color = Theme.TitleBarSeparator,
 				ZIndex = 8,
-				Visible = true,
+				Visible = false,
 			})
 			Section._LeftAccentLine = CreateTrackedDrawingObject("Line")
 			ApplyDrawingProperties(Section._LeftAccentLine, {
@@ -5095,7 +5531,7 @@ function Library:CreateWindow(WindowConfiguration)
 				Transparency = 0.8,
 				Color = Theme.TitleBarSeparator,
 				ZIndex = 8,
-				Visible = true,
+				Visible = false,
 			})
 			if Section._MaxHeight then
 				Section._ScrollbarTrack = CreateRectangleDrawing(Theme.ScrollbarBackground, true, 8, 1)
@@ -5123,6 +5559,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._Width = 0
 			Element._IsHovered = false
 			ConfigureElementTooltip(Element, LabelConfiguration)
+			ConfigureElementExecutorRequirements(Element, LabelConfiguration)
 
 			Element._LineDrawings = {}
 			Element._InlineVisualDrawings = {}
@@ -5136,7 +5573,7 @@ function Library:CreateWindow(WindowConfiguration)
 					Transparency = 0.4,
 					Color = Theme.SectionText,
 					ZIndex = 10,
-					Visible = true,
+					Visible = false,
 				})
 			end
 
@@ -5246,6 +5683,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._IsHovered = false
 			Element._DisplayOffset = 1
 			ConfigureElementTooltip(Element, TextBoxConfiguration)
+			ConfigureElementExecutorRequirements(Element, TextBoxConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.TextBoxBackground, true, 10, 0.95)
@@ -5415,6 +5853,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionY = 0
 			Element._Width = 0
 			ConfigureElementTooltip(Element, ButtonConfiguration)
+			ConfigureElementExecutorRequirements(Element, ButtonConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.ButtonBackground, true, 10, 0.95)
@@ -5463,6 +5902,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionY = 0
 			Element._Width = 0
 			ConfigureElementTooltip(Element, ToggleConfiguration)
+			ConfigureElementExecutorRequirements(Element, ToggleConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.ButtonBackground, true, 10, 0.95)
@@ -5534,6 +5974,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._PositionY = 0
 			Element._Width = 0
 			ConfigureElementTooltip(Element, DropdownConfiguration)
+			ConfigureElementExecutorRequirements(Element, DropdownConfiguration)
 
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.DropdownBackground, true, 10, 0.95)
@@ -5735,6 +6176,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._Width = 0
 			Element._IsHovered = false
 			ConfigureElementTooltip(Element, SliderConfiguration)
+			ConfigureElementExecutorRequirements(Element, SliderConfiguration)
 			Element._IsThumbHovered = false
 
 			local function SnapToIncrement(RawValue)
@@ -5753,24 +6195,16 @@ function Library:CreateWindow(WindowConfiguration)
 
 				Element._ThumbDrawing = CreateTrackedDrawingObject("Circle")
 				ApplyDrawingProperties(Element._ThumbDrawing, {
-					Color = Theme.SliderThumb,
-					Filled = true,
-					Radius = 7,
-					NumSides = 24,
-					Transparency = 1,
-					ZIndex = 13,
-					Visible = true,
-				})
-
-				Element._ThumbInnerDrawing = CreateTrackedDrawingObject("Circle")
-				ApplyDrawingProperties(Element._ThumbInnerDrawing, {
+					-- The slider uses one solid accent-colored thumb. A previous
+					-- secondary inner circle created a white ring around the active
+					-- color and made the control visually inconsistent with toggles.
 					Color = Theme.SliderTrackFill,
 					Filled = true,
-					Radius = 3,
-					NumSides = 16,
+					Radius = 7,
+					NumSides = 48,
 					Transparency = 1,
-					ZIndex = 14,
-					Visible = true,
+					ZIndex = 13,
+					Visible = false,
 				})
 			end
 
@@ -5833,6 +6267,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._IsHovered = false
 			Element._HoveredSwatchIndex = nil
 			ConfigureElementTooltip(Element, ColorPickerConfiguration)
+			ConfigureElementExecutorRequirements(Element, ColorPickerConfiguration)
 
 			for PaletteIndex, PaletteColor in ipairs(ColorPalette) do
 				if PaletteColor == ColorPickerConfiguration.Default then
@@ -6878,6 +7313,16 @@ function Library:CreateWindow(WindowConfiguration)
 		local PreviousTooltipVisible = Window._TooltipVisible == true
 		Window._HoveredTooltipElement = nil
 
+		-- A render step can run between two constructors while a layout batch is
+		-- still assigning section geometry. Ignore that frame completely instead
+		-- of reading provisional coordinates or exposing unfinished draw objects.
+		if not Window._HasCompletedLayout then
+			Window._TooltipVisible = false
+			Window._TooltipNeedsLayout = PreviousTooltipVisible
+			Window._MouseInWindow = false
+			return
+		end
+
 		-- Frame processing continues while a window is hidden so animations
 		-- can resume smoothly. Clear every transient hover state before returning;
 		-- otherwise an invisible control could accumulate the tooltip delay or
@@ -7060,6 +7505,15 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._IsHovered = IsCurrentlyHovered
 				end
 
+				-- A locked control uses its complete clipped rectangle as the hover
+				-- target. This keeps its explanation discoverable even for controls
+				-- whose normal interaction target is only a thumb or color swatch.
+				if Element._IsLocked then
+					Element._IsHovered = IsCurrentlyHovered
+					Element._IsThumbHovered = false
+					Element._IsSwatchHovered = false
+				end
+
 				if Element._IsHovered and Element._Tooltip and Element._Tooltip ~= "" then
 					Element._TooltipHoverStartedAt = Element._TooltipHoverStartedAt or tick()
 					Window._HoveredTooltipElement = Element
@@ -7210,6 +7664,13 @@ function Library:CreateWindow(WindowConfiguration)
 		local CurrentMousePosition = QueuedPrimaryClickPosition or Window:GetCurrentPointerPosition()
 		if QueuedPrimaryClickPosition then
 			Window._LastPointerPosition = QueuedPrimaryClickPosition
+		end
+
+		-- Layout construction is intentionally atomic from the renderer's point of
+		-- view. Waiting for the completed pass also prevents animation code below
+		-- from requesting a second pass against a partially populated section.
+		if not Window._HasCompletedLayout then
+			return
 		end
 		UpdateHoverState(CurrentMousePosition)
 
@@ -7522,6 +7983,11 @@ function Library:CreateWindow(WindowConfiguration)
 			for SectionIndex, Section in ipairs(Window:GetActiveSections()) do
 				for ElementIndex, Element in ipairs(Section._Elements) do
 					if Element._IsHovered then
+						if Element._IsLocked then
+							ClearFocusedTextBoxes()
+							return
+						end
+
 						if Element._Type == "TextButton" then
 							ClearFocusedTextBoxes()
 							InvokeCallback(Element._Callback)
@@ -8291,11 +8757,13 @@ function Library:CreateWindow(WindowConfiguration)
 							end
 
 							local ThumbRadius = LerpValue(7, 9, Element._ThumbHoverFactor or 0)
-							local ThumbColor = Theme.SliderThumb:Lerp(Theme.SliderThumbHover, Element._ThumbHoverFactor or 0)
+							local ThumbColor = Theme.SliderTrackFill:Lerp(
+								Theme.SliderTrackFillHover,
+								Element._ThumbHoverFactor or 0
+							)
 							local ThumbY = TrackPosition.Y + TrackHeight / 2
 							if ThumbY - ThumbRadius >= AllowedMinY and ThumbY + ThumbRadius <= AllowedMaxY then
 								DrawImmediateSolidCircle(Vector2.new(TrackPosition.X + FillWidth, ThumbY), ThumbRadius, ThumbColor, 1, 64)
-								DrawImmediateSolidCircle(Vector2.new(TrackPosition.X + FillWidth, ThumbY), 3, FillColor, 1, 48)
 							end
 						elseif Element._Type == "ColorPicker" then
 							local HoverFactor = Element._HoverFactor or 0
@@ -8346,6 +8814,13 @@ function Library:CreateWindow(WindowConfiguration)
 								end
 							end
 						end
+						DrawImmediateExecutorLock(
+							Element,
+							ElementPosition,
+							ElementSize,
+							AllowedMinY,
+							AllowedMaxY
+						)
 					end
 				end
 			end

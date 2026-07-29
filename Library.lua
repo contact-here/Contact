@@ -1,11 +1,7 @@
 -- Executor compatibility helpers are declared up front so later code can use
 -- stable names without caring which executor runtime provided the original
 -- application programming interface.
-local CloneFunction, CloneReference, NewCClosure, SetClipboard, GetClipboard
-
--- Stores the last copied value as a local fallback for runtimes that cannot
--- read the system clipboard back after writing to it.
-local LastCopiedText = ""
+local CloneFunction, CloneReference, NewCClosure
 
 -- Executor-only controls must distinguish native runtime functions from Lua
 -- compatibility shims. debug.info is part of the required baseline for this
@@ -70,58 +66,21 @@ do
 		end
 	end
 
-	-- Clipboard application programming interfaces have several names across
-	-- executors. The wrapper validates the input and records the text locally
-	-- before attempting the native call.
-	local RawSetClipboard = setclipboard or toclipboard or set_clipboard
-
-	SetClipboard = RawSetClipboard and function(ClipboardText)
-		-- Non-string clipboard writes are ignored to avoid executor-specific
-		-- coercion surprises.
-		if typeof(ClipboardText) ~= "string" then
-			return
-		end
-
-		LastCopiedText = ClipboardText
-		local ClipboardWriteSucceeded, NativeClipboardResult = pcall(RawSetClipboard, ClipboardText)
-
-		if ClipboardWriteSucceeded then
-			return NativeClipboardResult
-		end
-
-		return ClipboardText
-	end or function(ClipboardText)
-		-- Fallback mode cannot touch the operating system clipboard, but preserving the text
-		-- still makes copy and read flows deterministic inside the interface.
-		LastCopiedText = ClipboardText
-		return ClipboardText
-	end
-
-	-- Reading the clipboard is optional; if the runtime cannot provide it, the
-	-- last text copied through this library is returned instead.
-	local RawGetClipboard = getclipboard or get_clipboard
-
-	GetClipboard = RawGetClipboard and function()
-		local ClipboardReadSucceeded, ClipboardText = pcall(RawGetClipboard)
-
-		if ClipboardReadSucceeded and ClipboardText and #ClipboardText > 0 then
-			return ClipboardText
-		end
-
-		return LastCopiedText
-	end or function()
-		return LastCopiedText
-	end
 end
 
 local UserInputService, RunService, ContextActionService, GraphicalUserInterfaceService, CoreGui, Workspace
 local DrawingLibrary = Drawing
+local WriteClipboardText = setclipboard or toclipboard or set_clipboard
 local DataModel = CloneReference(game)
 local GetService = CloneFunction(DataModel.GetService)
 local IsDataModelLoaded = CloneFunction(DataModel.IsLoaded)
 local DataModelLoadedSignal = DataModel.Loaded
 local WaitForDataModelLoaded = CloneFunction(DataModelLoadedSignal.Wait)
 local CreateInstance = CloneFunction(Instance.new)
+local DestroyInstance = CloneFunction(DataModel.Destroy)
+local FindFirstChild = CloneFunction(DataModel.FindFirstChild)
+local GetPropertyChangedSignal = CloneFunction(DataModel.GetPropertyChangedSignal)
+local ConnectSignal
 
 -- Roblox exposes a one-shot Loaded signal specifically for initialization.
 -- Check IsLoaded first because waiting after the signal has already fired would
@@ -139,30 +98,22 @@ do
 	GraphicalUserInterfaceService = CloneReference(GetService(DataModel, "GuiService"))
 	CoreGui              = CloneReference(GetService(DataModel, "CoreGui"))
 	Workspace            = CloneReference(GetService(DataModel, "Workspace"))
+	-- The generic RBXScriptSignal connection method is cached only after the
+	-- cloned RunService reference is available.
+	ConnectSignal = CloneFunction(RunService.Heartbeat.Connect)
 end
 
-local GetMouseLocation, IsMouseButtonPressed, IsKeyDown
-local GetStringForKeyCode, GetKeysPressed, GetMouseButtonsPressed
+local GetMouseLocation, IsMouseButtonPressed, GetMouseButtonsPressed
 local GetDeviceType
 local GetGraphicalUserInterfaceInset
-local HeartbeatSignalConnect, InterfaceFrameSignal, InterfaceFrameSignalConnect
+local InterfaceFrameSignal
 local BindCoreActionAtPriority, UnbindCoreAction
-local InputBeganSignalConnect, InputChangedSignalConnect, InputEndedSignalConnect
-local WindowFocusReleasedConnect, WindowFocusedConnect
 
 do
 	-- Method references are copied once and called with explicit self later.
 	-- This keeps hot input/render paths shorter and more predictable.
 	GetMouseLocation     = CloneFunction(UserInputService.GetMouseLocation)
 	IsMouseButtonPressed = CloneFunction(UserInputService.IsMouseButtonPressed)
-	IsKeyDown            = CloneFunction(UserInputService.IsKeyDown)
-	GetStringForKeyCode  = typeof(UserInputService.GetStringForKeyCode) == "function"
-		and CloneFunction(UserInputService.GetStringForKeyCode)
-		or function() return "" end
-
-	GetKeysPressed           = typeof(UserInputService.GetKeysPressed) == "function"
-		and CloneFunction(UserInputService.GetKeysPressed)
-		or function() return {} end
 
 	GetMouseButtonsPressed   = typeof(UserInputService.GetMouseButtonsPressed) == "function"
 		and CloneFunction(UserInputService.GetMouseButtonsPressed)
@@ -172,19 +123,10 @@ do
 		or function() return "Unknown" end
 	GetGraphicalUserInterfaceInset = CloneFunction(GraphicalUserInterfaceService.GetGuiInset)
 
-	HeartbeatSignalConnect = CloneFunction(RunService.Heartbeat.Connect)
 	InterfaceFrameSignal = RunService.PreRender or RunService.RenderStepped or RunService.Heartbeat
-	InterfaceFrameSignalConnect = CloneFunction(InterfaceFrameSignal.Connect)
 
 	BindCoreActionAtPriority = CloneFunction(ContextActionService.BindCoreActionAtPriority)
 	UnbindCoreAction         = CloneFunction(ContextActionService.UnbindCoreAction)
-
-	InputBeganSignalConnect   = CloneFunction(UserInputService.InputBegan.Connect)
-	InputChangedSignalConnect = CloneFunction(UserInputService.InputChanged.Connect)
-	InputEndedSignalConnect   = CloneFunction(UserInputService.InputEnded.Connect)
-
-	WindowFocusReleasedConnect = CloneFunction(UserInputService.WindowFocusReleased.Connect)
-	WindowFocusedConnect       = CloneFunction(UserInputService.WindowFocused.Connect)
 end
 
 local SetRenderProperty, GetRenderProperty
@@ -277,8 +219,15 @@ if not DrawingIsNative then
 			if ExecutionSuccess and typeof(ExecutionResult) == "table" and typeof(ExecutionResult.new) == "function" then
 				DrawingLibrary = ExecutionResult
 
-				SetRenderProperty = ExecutionResult.SetRenderProperty
-				GetRenderProperty = ExecutionResult.GetRenderProperty
+				-- Preserve the generic table/userdata property adapters when a
+				-- replacement backend implements Drawing.new but omits either
+				-- optional optimized property helper.
+				if typeof(ExecutionResult.SetRenderProperty) == "function" then
+					SetRenderProperty = ExecutionResult.SetRenderProperty
+				end
+				if typeof(ExecutionResult.GetRenderProperty) == "function" then
+					GetRenderProperty = ExecutionResult.GetRenderProperty
+				end
 			end
 		end
 	end
@@ -541,6 +490,11 @@ Theme = {
 	SliderTrackFillHover  = Color3.fromRGB(136, 236, 214),
 	SliderText            = Color3.fromRGB(221, 231, 229),
 	SliderBorder          = Color3.fromRGB(55, 72, 80),
+	SliderTrackHeight       = 8,
+	SliderTrackHoverHeight  = 10,
+	SliderThumbRadius       = 7,
+	SliderThumbHoverRadius  = 9,
+	ToggleIndicatorRadius   = 5,
 
 	ColorPickerBorder      = Color3.fromRGB(55, 72, 80),
 	ColorPickerSelectedBorder = Color3.fromRGB(98, 211, 190),
@@ -908,31 +862,6 @@ GetTextBoxSelectionBounds = function(Element)
 	end
 
 	return StartIndex, EndIndex
-end
-
-GetTextBoxSelectedText = function(Element)
-	local StartIndex, EndIndex = GetTextBoxSelectionBounds(Element)
-	if not StartIndex then
-		return ""
-	end
-
-	return string.sub(Element._Value or "", StartIndex, EndIndex - 1)
-end
-
-ReplaceTextBoxSelection = function(Element, ReplacementText)
-	local CurrentValue = Element._Value or ""
-	local StartIndex, EndIndex = GetTextBoxSelectionBounds(Element)
-	if not StartIndex then
-		StartIndex = ClampTextBoxCursorIndex(Element)
-		EndIndex = StartIndex
-	end
-
-	local PrefixText = string.sub(CurrentValue, 1, StartIndex - 1)
-	local SuffixText = string.sub(CurrentValue, EndIndex)
-	local NewValue = string.format("%s%s%s", PrefixText, tostring(ReplacementText or ""), SuffixText)
-	Element:SetValue(NewValue)
-	SetTextBoxCursorIndex(Element, StartIndex + #(ReplacementText or ""))
-	ClearTextBoxSelection(Element)
 end
 
 GetFocusedTextBoxDisplayOffset = function(Element, MaximumCharacters)
@@ -1505,7 +1434,10 @@ local function MakeDrawingFactory(TrackedDrawingsTable)
 			return nil 
 		end
 
-		local DrawingObject = DrawingLibrary.new(ObjectType)
+		local CreationSucceeded, DrawingObject = pcall(DrawingLibrary.new, ObjectType)
+		if not CreationSucceeded or not DrawingObject then
+			return nil
+		end
 		table.insert(TrackedDrawingsTable, DrawingObject)
 
 		return DrawingObject
@@ -1691,6 +1623,127 @@ local function SetDrawingObjectsVisibility(DrawingObjects, IsVisible)
 end
 
 local Library = {}
+local SupportedInputBlockingTypes = {
+	Scroll = true,
+	TouchInterface = true,
+	Interface = true,
+	Camera = true,
+}
+
+function Library.CopyTextToClipboard(ClipboardText)
+	-- Clipboard access belongs to the executor rather than Roblox. Keep the
+	-- original function reference and expose one truthful result contract to all
+	-- applications instead of maintaining per-game no-op compatibility shims.
+	if typeof(WriteClipboardText) ~= "function" then
+		return false, "Clipboard writing is unavailable on this executor"
+	end
+
+	local ClipboardWriteSucceeded, ClipboardFailureMessage = pcall(
+		WriteClipboardText,
+		tostring(ClipboardText or "")
+	)
+	if not ClipboardWriteSucceeded then
+		return false, tostring(ClipboardFailureMessage)
+	end
+	return true, nil
+end
+
+function Library.FindExistingOrAwaitAddedChild(TargetInstance, ChildName, CancellationPredicate)
+	-- Consumers frequently need a replicated object that may already exist or
+	-- may arrive after startup. This shared implementation prevents each script
+	-- from maintaining a subtly different ChildAdded waiting loop. An optional
+	-- cancellation predicate lets lifecycle-owned workers stop waiting when their
+	-- window, controller, or character generation is no longer current.
+	if typeof(TargetInstance) ~= "Instance"
+		or typeof(ChildName) ~= "string"
+		or ChildName == ""
+		or (CancellationPredicate ~= nil and typeof(CancellationPredicate) ~= "function")
+	then
+		return nil
+	end
+
+	local InitialLookupSucceeded, InitialChild = pcall(
+		FindFirstChild,
+		TargetInstance,
+		ChildName
+	)
+	if InitialLookupSucceeded and InitialChild then
+		return CloneReference(InitialChild)
+	end
+
+	local ChildAddedSignalReadSucceeded, ChildAddedSignal = pcall(function()
+		return TargetInstance.ChildAdded
+	end)
+	if not ChildAddedSignalReadSucceeded or not ChildAddedSignal then
+		return nil
+	end
+
+	-- A direct signal wait cannot be cancelled. Keep one temporary connection
+	-- instead, then yield cooperatively while checking both the requested child
+	-- and the caller's lifecycle predicate.
+	local AddedMatchingChild
+	local ConnectionSucceeded, ChildAddedConnection = pcall(
+		ConnectSignal,
+		ChildAddedSignal,
+		NewCClosure(function(AddedChild)
+			AddedChild = CloneReference(AddedChild)
+			if AddedChild and AddedChild.Name == ChildName then
+				AddedMatchingChild = AddedChild
+			end
+		end)
+	)
+	if not ConnectionSucceeded or not ChildAddedConnection then
+		return nil
+	end
+
+	local function DisconnectChildAddedConnection()
+		if ChildAddedConnection then
+			pcall(ChildAddedConnection.Disconnect, ChildAddedConnection)
+			ChildAddedConnection = nil
+		end
+	end
+
+	while not AddedMatchingChild do
+		if CancellationPredicate then
+			local PredicateSucceeded, ShouldCancel = pcall(CancellationPredicate)
+			if not PredicateSucceeded or ShouldCancel == true then
+				DisconnectChildAddedConnection()
+				return nil
+			end
+		end
+
+		local RecheckSucceeded, RecheckedChild = pcall(
+			FindFirstChild,
+			TargetInstance,
+			ChildName
+		)
+		if RecheckSucceeded and RecheckedChild then
+			AddedMatchingChild = CloneReference(RecheckedChild)
+			break
+		end
+		task.wait()
+	end
+
+	DisconnectChildAddedConnection()
+	return AddedMatchingChild
+end
+
+function Library.GetSortedDictionaryKeys(Dictionary)
+	-- Deterministic dictionary ordering keeps generated information reports and
+	-- dropdown options stable between refreshes.
+	local SortedKeys = {}
+	if typeof(Dictionary) ~= "table" then
+		return SortedKeys
+	end
+
+	for DictionaryKey in pairs(Dictionary) do
+		SortedKeys[#SortedKeys + 1] = DictionaryKey
+	end
+	table.sort(SortedKeys, function(FirstKey, SecondKey)
+		return string.lower(tostring(FirstKey)) < string.lower(tostring(SecondKey))
+	end)
+	return SortedKeys
+end
 
 Library._Windows = {}
 
@@ -1701,25 +1754,6 @@ Library._InputBlockingRequests = {}
 Library._Visible = true
 
 Library.ToggleKey = Enum.KeyCode.RightControl
-
-local TextEntryInputObjects = {
-	Enum.UserInputType.MouseButton1,
-	Enum.UserInputType.MouseWheel,
-	Enum.KeyCode.A, Enum.KeyCode.B, Enum.KeyCode.C, Enum.KeyCode.D, Enum.KeyCode.E, Enum.KeyCode.F,
-	Enum.KeyCode.G, Enum.KeyCode.H, Enum.KeyCode.I, Enum.KeyCode.J, Enum.KeyCode.K, Enum.KeyCode.L,
-	Enum.KeyCode.M, Enum.KeyCode.N, Enum.KeyCode.O, Enum.KeyCode.P, Enum.KeyCode.Q, Enum.KeyCode.R,
-	Enum.KeyCode.S, Enum.KeyCode.T, Enum.KeyCode.U, Enum.KeyCode.V, Enum.KeyCode.W, Enum.KeyCode.X,
-	Enum.KeyCode.Y, Enum.KeyCode.Z,
-	Enum.KeyCode.Zero, Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four,
-	Enum.KeyCode.Five, Enum.KeyCode.Six, Enum.KeyCode.Seven, Enum.KeyCode.Eight, Enum.KeyCode.Nine,
-	Enum.KeyCode.Space, Enum.KeyCode.Backspace, Enum.KeyCode.Delete, Enum.KeyCode.Return,
-	Enum.KeyCode.KeypadEnter, Enum.KeyCode.Escape, Enum.KeyCode.Home, Enum.KeyCode.End,
-	Enum.KeyCode.Left, Enum.KeyCode.Right, Enum.KeyCode.Up, Enum.KeyCode.Down,
-	Enum.KeyCode.LeftControl, Enum.KeyCode.RightControl, Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift,
-	Enum.KeyCode.Minus, Enum.KeyCode.Equals, Enum.KeyCode.LeftBracket, Enum.KeyCode.RightBracket,
-	Enum.KeyCode.BackSlash, Enum.KeyCode.Semicolon, Enum.KeyCode.Quote, Enum.KeyCode.Comma,
-	Enum.KeyCode.Period, Enum.KeyCode.Slash, Enum.KeyCode.Backquote,
-}
 
 Library.Connections = {}
 
@@ -1791,7 +1825,7 @@ end
 
 local CachedPreferredInput = nil
 
-table.insert(Library.Connections, InputChangedSignalConnect(UserInputService.InputChanged, NewCClosure(function()
+table.insert(Library.Connections, ConnectSignal(UserInputService.InputChanged, NewCClosure(function()
 	local CurrentPreferredInput = UserInputService.PreferredInput
 	if CurrentPreferredInput ~= CachedPreferredInput then
 		CachedPreferredInput = CurrentPreferredInput
@@ -1880,11 +1914,11 @@ function Library:ProcessMouseWheel(Input)
 	return false
 end
 
-table.insert(Library.Connections, InputChangedSignalConnect(UserInputService.InputChanged, NewCClosure(function(Input)
+table.insert(Library.Connections, ConnectSignal(UserInputService.InputChanged, NewCClosure(function(Input)
 	Library:ProcessMouseWheel(Input)
 end)))
 
-table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.InputBegan, NewCClosure(function(Input, Processed)
+table.insert(Library.Connections, ConnectSignal(UserInputService.InputBegan, NewCClosure(function(Input, Processed)
 	if Input.KeyCode == Library.ToggleKey then
 		Library._Visible = not Library._Visible
 
@@ -1924,66 +1958,23 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 			end
 
 			if FocusedBox then
-				-- A touch device edits through the hidden native Roblox TextBox. Its
-				-- Text changed signal is the sole writer while the on-screen keyboard
-				-- is open, preventing the same key from being inserted a second time
-				-- by the desktop-oriented manual keyboard path below.
+				-- The hidden native Roblox TextBox is the sole text editor on every
+				-- platform. Roblox owns keyboard layouts, Unicode composition,
+				-- clipboard shortcuts, cursor movement, and the on-screen keyboard.
 				local NativeTextInputState = Window._NativeTextInputState
-				if Window._TouchInputAvailable
-					and NativeTextInputState
+				if NativeTextInputState
+					and NativeTextInputState.Available
 					and NativeTextInputState.TargetElement == FocusedBox then
-					return
-				end
-
-				local function PerformTypingAction()
-					if not FocusedBox._IsFocused or not Window._Visible or Window._Destroyed then 
-						return false 
-					end
-
-					local HeldKeys = GetKeysPressed(UserInputService)
-					local CtrlHeld = false
-					local ShiftHeld = false
-
-					for Index, HeldKey in ipairs(HeldKeys) do
-						local CurrentKeyCode = HeldKey.KeyCode
-						if CurrentKeyCode == Enum.KeyCode.LeftControl or CurrentKeyCode == Enum.KeyCode.RightControl then
-							CtrlHeld = true
-						end
-						if CurrentKeyCode == Enum.KeyCode.LeftShift or CurrentKeyCode == Enum.KeyCode.RightShift then
-							ShiftHeld = true
-						end
-					end
-
-					if Input.KeyCode == Enum.KeyCode.Backspace then
-						if FocusedBox._IsSelected then
-							ReplaceTextBoxSelection(FocusedBox, "")
-						else
-							local CursorIndex = ClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
-							if CursorIndex > 1 then
-								FocusedBox._SelectionStartIndex = CursorIndex - 1
-								FocusedBox._SelectionEndIndex = CursorIndex
-								FocusedBox._IsSelected = true
-								ReplaceTextBoxSelection(FocusedBox, "")
-							end
-						end
-						return true
-					elseif Input.KeyCode == Enum.KeyCode.Delete then
-						if FocusedBox._IsSelected then
-							ReplaceTextBoxSelection(FocusedBox, "")
-						else
-							local CursorIndex = ClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
-							if CursorIndex <= #FocusedBox._Value then
-								FocusedBox._SelectionStartIndex = CursorIndex
-								FocusedBox._SelectionEndIndex = CursorIndex + 1
-								FocusedBox._IsSelected = true
-								ReplaceTextBoxSelection(FocusedBox, "")
-							end
-						end
-						return true
-					elseif (Input.KeyCode == Enum.KeyCode.Up or Input.KeyCode == Enum.KeyCode.Down)
+					-- Single-line native TextBoxes do not use Up and Down for text
+					-- editing, so those two keys remain available for navigating the
+					-- library's suggestion list.
+					if (Input.KeyCode == Enum.KeyCode.Up or Input.KeyCode == Enum.KeyCode.Down)
 						and FocusedBox._Suggestions
 						and #FocusedBox._Suggestions > 0 then
-						local SuggestionCount = math.min(#FocusedBox._Suggestions, FocusedBox._MaximumSuggestions or #FocusedBox._Suggestions)
+						local SuggestionCount = math.min(
+							#FocusedBox._Suggestions,
+							FocusedBox._MaximumSuggestions or #FocusedBox._Suggestions
+						)
 						local CurrentSuggestionIndex = FocusedBox._KeyboardSuggestionIndex or 0
 						if Input.KeyCode == Enum.KeyCode.Down then
 							CurrentSuggestionIndex = CurrentSuggestionIndex % SuggestionCount + 1
@@ -1992,119 +1983,7 @@ table.insert(Library.Connections, InputBeganSignalConnect(UserInputService.Input
 						end
 						FocusedBox._KeyboardSuggestionIndex = CurrentSuggestionIndex
 						Window:RecalculateLayout()
-						return true
-					elseif Input.KeyCode == Enum.KeyCode.Left
-						or Input.KeyCode == Enum.KeyCode.Right
-						or Input.KeyCode == Enum.KeyCode.Home
-						or Input.KeyCode == Enum.KeyCode.End then
-						-- Cursor navigation uses the same half-open index model as mouse
-						-- selection. Holding Shift extends the active range; moving without
-						-- Shift collapses an existing selection in the expected direction.
-						local CurrentCursorIndex = ClampTextBoxCursorIndex(FocusedBox, FocusedBox._CursorIndex)
-						local SelectionStartIndex, SelectionEndIndex = GetTextBoxSelectionBounds(FocusedBox)
-						local TargetCursorIndex = CurrentCursorIndex
-
-						if Input.KeyCode == Enum.KeyCode.Home then
-							TargetCursorIndex = 1
-						elseif Input.KeyCode == Enum.KeyCode.End then
-							TargetCursorIndex = #FocusedBox._Value + 1
-						elseif Input.KeyCode == Enum.KeyCode.Left then
-							TargetCursorIndex = not ShiftHeld and SelectionStartIndex or math.max(1, CurrentCursorIndex - 1)
-						elseif Input.KeyCode == Enum.KeyCode.Right then
-							TargetCursorIndex = not ShiftHeld and SelectionEndIndex or math.min(#FocusedBox._Value + 1, CurrentCursorIndex + 1)
-						end
-
-						TargetCursorIndex = TargetCursorIndex or CurrentCursorIndex
-						if ShiftHeld then
-							local SelectionAnchorIndex = FocusedBox._SelectionAnchorIndex or CurrentCursorIndex
-							SetTextBoxSelectionRange(FocusedBox, SelectionAnchorIndex, TargetCursorIndex)
-						else
-							SetTextBoxCursorIndex(FocusedBox, TargetCursorIndex)
-							ClearTextBoxSelection(FocusedBox)
-						end
-
-						FocusedBox._CursorVisible = true
-						FocusedBox._CursorBlinkTime = tick()
-						return true
-					elseif (Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter)
-						and FocusedBox._KeyboardSuggestionIndex
-						and typeof(FocusedBox.ApplySuggestion) == "function" then
-						FocusedBox:ApplySuggestion(FocusedBox._KeyboardSuggestionIndex)
-						Window:SetInputBlocking("Typing", false)
-						return false
-					elseif Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter or Input.KeyCode == Enum.KeyCode.Escape then
-						FocusedBox._IsFocused = false
-						FocusedBox._SelectionDragging = false
-						ClearTextBoxSelection(FocusedBox)
-						FocusedBox._CursorVisible = false
-						Window:SetInputBlocking("Typing", false)
-						return false
-					elseif Input.KeyCode == Enum.KeyCode.Space then
-						ReplaceTextBoxSelection(FocusedBox, " ")
-						return true
-					elseif CtrlHeld and Input.KeyCode == Enum.KeyCode.V then
-						local ClipboardText = GetClipboard()
-
-						if ClipboardText and #ClipboardText > 0 then
-							ReplaceTextBoxSelection(FocusedBox, ClipboardText)
-						end
-						return false
-					elseif CtrlHeld and Input.KeyCode == Enum.KeyCode.C then
-						local SelectedText = GetTextBoxSelectedText(FocusedBox)
-						SetClipboard(SelectedText ~= "" and SelectedText or FocusedBox._Value)
-						return false
-					elseif CtrlHeld and Input.KeyCode == Enum.KeyCode.A then
-
-						SetTextBoxSelectionRange(FocusedBox, 1, #FocusedBox._Value + 1)
-						return false
-					elseif not CtrlHeld then
-						local Character = GetStringForKeyCode(UserInputService, Input.KeyCode)
-						if Character and #Character == 1 then
-							if ShiftHeld then
-								local ShiftMap = {
-									["1"] = "!", ["2"] = "@", ["3"] = "#", ["4"] = "$", ["5"] = "%",
-									["6"] = "^", ["7"] = "&", ["8"] = "*", ["9"] = "(", ["0"] = ")",
-									["-"] = "_", ["="] = "+", ["["] = "{", ["]"] = "}", ["\\"] = "|",
-									[";"] = ":", ["'"] = "\"", [","] = "<", ["."] = ">", ["/"] = "?",
-									["`"] = "~",
-								}
-								Character = ShiftMap[Character] or string.upper(Character)
-							else
-								Character = string.lower(Character)
-							end
-
-							ReplaceTextBoxSelection(FocusedBox, Character)
-
-							return true
-						end
 					end
-
-					return false
-				end
-
-				if PerformTypingAction() then
-					local StartTime = tick()
-					local LastRepeat = tick()
-					local RepeatDelay = 0.45
-					local RepeatInterval = 0.04
-
-					local RepeatConnection
-
-					RepeatConnection = HeartbeatSignalConnect(RunService.Heartbeat, NewCClosure(function()
-						if not FocusedBox._IsFocused or not IsKeyDown(UserInputService, Input.KeyCode) or not Library._Visible or not Window._Visible or Window._Destroyed then
-							RepeatConnection:Disconnect()
-							
-							return
-						end
-
-						local CurrentTimestamp = tick()
-						if CurrentTimestamp - StartTime > RepeatDelay then
-							if CurrentTimestamp - LastRepeat > RepeatInterval then
-								PerformTypingAction()
-								LastRepeat = CurrentTimestamp
-							end
-						end
-					end))
 				end
 				return
 			end
@@ -2440,6 +2319,11 @@ function Library:CreateWindow(WindowConfiguration)
 			SectionPadding = Theme.SectionPadding,
 			InnerMargin = Theme.InnerMargin,
 			ScrollbarWidth = Theme.ScrollbarWidth,
+			SliderTrackHeight = Theme.SliderTrackHeight,
+			SliderTrackHoverHeight = Theme.SliderTrackHoverHeight,
+			SliderThumbRadius = Theme.SliderThumbRadius,
+			SliderThumbHoverRadius = Theme.SliderThumbHoverRadius,
+			ToggleIndicatorRadius = Theme.ToggleIndicatorRadius,
 			ColorSwatchSize = Theme.ColorSwatchSize,
 			ColorSwatchGap = Theme.ColorSwatchGap,
 			TooltipWidth = Theme.TooltipWidth,
@@ -2459,10 +2343,6 @@ function Library:CreateWindow(WindowConfiguration)
 	Window._Destroyed = false
 	Window._Destroying = false
 	Window._TouchInputAvailable = TouchInputAvailable
-	-- The versioned profile intentionally invalidates geometry saved by the older
-	-- oversized touch layout. ApplyTouchViewportGeometry replaces this temporary
-	-- value with its orientation-specific profile before configuration is restored.
-	Window._DeviceProfile = TouchInputAvailable and "Responsive touch pending version 3" or "Desktop"
 	Window._UseSingleColumnLayout = false
 	Window._TouchLayoutWasPortrait = nil
 	Window._ViewportScaleInitialized = false
@@ -2754,7 +2634,6 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._IsFocused = false
 					Element._IsSelected = false
 					Element._SelectionDragging = false
-					Window:SetInputBlocking("Typing", false)
 				end
 
 				if Window._ActiveColorPicker == Element and Element.ClosePopup then
@@ -3282,9 +3161,6 @@ function Library:CreateWindow(WindowConfiguration)
 			and Window._TouchLayoutWasPortrait ~= PortraitLayout
 		Window._TouchLayoutWasPortrait = PortraitLayout
 		Window._UseSingleColumnLayout = PortraitLayout or ViewportSize.X <= 760
-		Window._DeviceProfile = PortraitLayout
-			and "Responsive touch portrait version 3"
-			or "Responsive touch landscape version 3"
 
 		if (ShouldResetResponsiveBase or TouchOrientationChanged) and Window._InitialResponsiveBaseGeometry then
 			-- Restore the original touch dimensions before recomputing the responsive
@@ -3417,14 +3293,17 @@ function Library:CreateWindow(WindowConfiguration)
 		SetValue = NewCClosure(function(Self, NewValue)
 			Self._Value = tostring(NewValue or "")
 			Self._CursorIndex = ClampTextBoxCursorIndex(Self, Self._CursorIndex)
+			if Window.SynchronizeNativeTextInputValue then
+				Window:SynchronizeNativeTextInputValue(Self)
+			end
 			Window:PerformSearch()
 		end)
 	}
 
-	-- Drawing text boxes cannot summon the platform keyboard by themselves. A
-	-- single transparent Roblox TextBox acts as a touch-only input bridge for the
-	-- complete window. Desktop users continue through the existing
-	-- BindCoreActionAtPriority keyboard implementation without creating this Gui.
+	-- Drawing text boxes cannot delegate text composition, clipboard operations,
+	-- or platform keyboard behavior to Roblox by themselves. One transparent
+	-- native TextBox therefore acts as the only input bridge for the complete
+	-- window on desktop, tablet, and phone.
 	Window._NativeTextInputState = {
 		Available = false,
 		Synchronizing = false,
@@ -3435,19 +3314,19 @@ function Library:CreateWindow(WindowConfiguration)
 		ReleaseFocus = nil,
 	}
 
-	if Window._TouchInputAvailable then
+	do
 		local NativeTextInputState = Window._NativeTextInputState
 		local NativeTextInputScreenGui
 		local NativeTextInputTextBox
 		local NativeInputCreationSucceeded = pcall(function()
-			NativeTextInputScreenGui = CreateInstance("ScreenGui")
+			NativeTextInputScreenGui = CloneReference(CreateInstance("ScreenGui"))
 			NativeTextInputScreenGui.Name = RandomString(32)
 			NativeTextInputScreenGui.DisplayOrder = 2147483647
 			NativeTextInputScreenGui.IgnoreGuiInset = true
 			NativeTextInputScreenGui.ResetOnSpawn = false
 			NativeTextInputScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 
-			NativeTextInputTextBox = CreateInstance("TextBox")
+			NativeTextInputTextBox = CloneReference(CreateInstance("TextBox"))
 			NativeTextInputTextBox.Name = RandomString(32)
 			NativeTextInputTextBox.Active = true
 			NativeTextInputTextBox.BackgroundTransparency = 1
@@ -3478,8 +3357,50 @@ function Library:CreateWindow(WindowConfiguration)
 			NativeTextInputState.CaptureFocus = CloneFunction(NativeTextInputTextBox.CaptureFocus)
 			NativeTextInputState.ReleaseFocus = CloneFunction(NativeTextInputTextBox.ReleaseFocus)
 
-			local NativeTextChangedSignal = NativeTextInputTextBox:GetPropertyChangedSignal("Text")
-			local NativeTextChangedConnection = NativeTextChangedSignal:Connect(NewCClosure(function()
+			local function ConnectNativeTextInputSignal(TargetSignal, CallbackFunction)
+				-- Reuse the library-wide cloned RBXScriptSignal connection method so
+				-- every native bridge signal follows the same trusted call path.
+				return ConnectSignal(TargetSignal, NewCClosure(CallbackFunction))
+			end
+
+			local function SynchronizeDrawingSelectionFromNative()
+				-- CursorPosition is the active end of a native Roblox selection,
+				-- while SelectionStart is its anchor. The Drawing presentation uses
+				-- the same one-based, half-open positions, so no character-index
+				-- conversion is necessary.
+				if NativeTextInputState.Synchronizing then
+					return
+				end
+
+				local TargetElement = NativeTextInputState.TargetElement
+				if not TargetElement or Window._Destroyed then
+					return
+				end
+
+				local NativeCursorPosition = tonumber(NativeTextInputTextBox.CursorPosition)
+				local NativeSelectionStart = tonumber(NativeTextInputTextBox.SelectionStart)
+				if not NativeCursorPosition or NativeCursorPosition < 1 then
+					return
+				end
+
+				if NativeSelectionStart and NativeSelectionStart >= 1
+					and NativeSelectionStart ~= NativeCursorPosition then
+					SetTextBoxSelectionRange(TargetElement, NativeSelectionStart, NativeCursorPosition)
+					TargetElement._SelectionAnchorIndex = NativeSelectionStart
+				else
+					SetTextBoxCursorIndex(TargetElement, NativeCursorPosition)
+					ClearTextBoxSelection(TargetElement)
+				end
+
+				TargetElement._CursorVisible = true
+				TargetElement._CursorBlinkTime = tick()
+			end
+
+			local NativeTextChangedSignal = GetPropertyChangedSignal(
+				NativeTextInputTextBox,
+				"Text"
+			)
+			local NativeTextChangedConnection = ConnectNativeTextInputSignal(NativeTextChangedSignal, function()
 				if NativeTextInputState.Synchronizing then
 					return
 				end
@@ -3490,21 +3411,44 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 
 				local UpdatedText = tostring(NativeTextInputTextBox.Text or "")
+				NativeTextInputState.Synchronizing = true
 				TargetElement:SetValue(UpdatedText)
-				local NativeCursorPosition = tonumber(NativeTextInputTextBox.CursorPosition)
-				if NativeCursorPosition and NativeCursorPosition > 0 then
-					SetTextBoxCursorIndex(TargetElement, NativeCursorPosition)
-				else
-					SetTextBoxCursorIndex(TargetElement, #UpdatedText + 1)
-				end
-				TargetElement._CursorVisible = true
-				TargetElement._CursorBlinkTime = tick()
+				NativeTextInputState.Synchronizing = false
+				SynchronizeDrawingSelectionFromNative()
 				Window:RecalculateLayout()
-			end))
+			end)
 			table.insert(Window._Connections, NativeTextChangedConnection)
 
-			local NativeFocusLostConnection = NativeTextInputTextBox.FocusLost:Connect(NewCClosure(function()
+			local NativeCursorChangedSignal = GetPropertyChangedSignal(
+				NativeTextInputTextBox,
+				"CursorPosition"
+			)
+			local NativeCursorChangedConnection = ConnectNativeTextInputSignal(
+				NativeCursorChangedSignal,
+				SynchronizeDrawingSelectionFromNative
+			)
+			table.insert(Window._Connections, NativeCursorChangedConnection)
+
+			local NativeSelectionChangedSignal = GetPropertyChangedSignal(
+				NativeTextInputTextBox,
+				"SelectionStart"
+			)
+			local NativeSelectionChangedConnection = ConnectNativeTextInputSignal(
+				NativeSelectionChangedSignal,
+				SynchronizeDrawingSelectionFromNative
+			)
+			table.insert(Window._Connections, NativeSelectionChangedConnection)
+
+			local NativeFocusLostSignal = NativeTextInputTextBox.FocusLost
+			local NativeFocusLostConnection = ConnectNativeTextInputSignal(NativeFocusLostSignal, function(EnterPressed)
 				local TargetElement = NativeTextInputState.TargetElement
+				if EnterPressed
+					and TargetElement
+					and TargetElement._KeyboardSuggestionIndex
+					and typeof(TargetElement.ApplySuggestion) == "function" then
+					TargetElement:ApplySuggestion(TargetElement._KeyboardSuggestionIndex)
+				end
+
 				NativeTextInputState.TargetElement = nil
 				if TargetElement then
 					TargetElement._IsFocused = false
@@ -3513,37 +3457,93 @@ function Library:CreateWindow(WindowConfiguration)
 					ClearTextBoxSelection(TargetElement)
 				end
 				Window._ActiveTextSelectionBox = nil
-				Window:SetInputBlocking("Typing", false)
 				if not Window._Destroyed and not Window._Destroying then
 					Window:RecalculateLayout()
 				end
-			end))
+			end)
 			table.insert(Window._Connections, NativeFocusLostConnection)
 
 			-- ReturnPressedFromOnScreenKeyboard is available on current clients, but
 			-- several executor object bridges omit the signal. Keep the ordinary
 			-- FocusLost path functional when that optional signal cannot be observed.
 			local NativeReturnConnectionCreationSucceeded, NativeReturnConnection = pcall(function()
-				return NativeTextInputTextBox.ReturnPressedFromOnScreenKeyboard:Connect(NewCClosure(function()
+				local NativeReturnPressedSignal = NativeTextInputTextBox.ReturnPressedFromOnScreenKeyboard
+				return ConnectNativeTextInputSignal(NativeReturnPressedSignal, function()
 					if NativeTextInputState.TargetElement then
 						pcall(NativeTextInputState.ReleaseFocus, NativeTextInputTextBox, true)
 					end
-				end))
+				end)
 			end)
 			if NativeReturnConnectionCreationSucceeded and NativeReturnConnection then
 				table.insert(Window._Connections, NativeReturnConnection)
 			end
 		else
+			-- Creation can fail after either object has already been allocated.
+			-- Destroy both references independently so an unparented TextBox cannot
+			-- survive as an unreachable native input target.
+			if NativeTextInputTextBox then
+				pcall(DestroyInstance, NativeTextInputTextBox)
+			end
 			if NativeTextInputScreenGui then
-				pcall(NativeTextInputScreenGui.Destroy, NativeTextInputScreenGui)
+				pcall(DestroyInstance, NativeTextInputScreenGui)
 			end
 		end
 	end
 
+	function Window:SynchronizeNativeTextInputValue(TargetElement)
+		-- Programmatic changes, including accepted autocomplete suggestions, must
+		-- update the native editor while it owns focus. The guard prevents the
+		-- native Text signal from feeding the same value back into the Drawing
+		-- element recursively.
+		local NativeTextInputState = Window._NativeTextInputState
+		if not NativeTextInputState
+			or not NativeTextInputState.Available
+			or NativeTextInputState.Synchronizing
+			or NativeTextInputState.TargetElement ~= TargetElement then
+			return false
+		end
+
+		local NativeTextInputTextBox = NativeTextInputState.TextBox
+		local NormalizedValue = tostring(TargetElement._Value or "")
+		NativeTextInputState.Synchronizing = true
+		if NativeTextInputTextBox.Text ~= NormalizedValue then
+			NativeTextInputTextBox.Text = NormalizedValue
+		end
+		NativeTextInputState.Synchronizing = false
+		return true
+	end
+
+	function Window:SynchronizeNativeTextInputSelection(TargetElement)
+		-- Mouse selection is calculated against Drawing text geometry. Mirror its
+		-- anchor and active cursor into the native TextBox so subsequent typing,
+		-- copying, and deletion operate on exactly the highlighted characters.
+		local NativeTextInputState = Window._NativeTextInputState
+		if not NativeTextInputState
+			or not NativeTextInputState.Available
+			or NativeTextInputState.TargetElement ~= TargetElement then
+			return false
+		end
+
+		local NativeTextInputTextBox = NativeTextInputState.TextBox
+		local NativeCursorPosition = ClampTextBoxCursorIndex(TargetElement, TargetElement._CursorIndex)
+		local NativeSelectionStart = -1
+		if TargetElement._IsSelected then
+			NativeSelectionStart = ClampTextBoxCursorIndex(
+				TargetElement,
+				TargetElement._SelectionAnchorIndex or TargetElement._SelectionStartIndex
+			)
+		end
+
+		NativeTextInputState.Synchronizing = true
+		NativeTextInputTextBox.CursorPosition = NativeCursorPosition
+		NativeTextInputTextBox.SelectionStart = NativeSelectionStart
+		NativeTextInputState.Synchronizing = false
+		return true
+	end
+
 	function Window:FocusNativeTextInput(TargetElement)
 		local NativeTextInputState = Window._NativeTextInputState
-		if not Window._TouchInputAvailable
-			or not NativeTextInputState
+		if not NativeTextInputState
 			or not NativeTextInputState.Available
 			or not TargetElement then
 			return false
@@ -3554,19 +3554,40 @@ function Library:CreateWindow(WindowConfiguration)
 		NativeTextInputState.Synchronizing = true
 		NativeTextInputTextBox.Text = tostring(TargetElement._Value or "")
 		NativeTextInputTextBox.PlaceholderText = tostring(TargetElement._Placeholder or "")
-		NativeTextInputTextBox.CursorPosition = #NativeTextInputTextBox.Text + 1
-		NativeTextInputTextBox.SelectionStart = -1
+		NativeTextInputTextBox.CursorPosition = ClampTextBoxCursorIndex(TargetElement, TargetElement._CursorIndex)
+		if TargetElement._IsSelected then
+			NativeTextInputTextBox.SelectionStart = ClampTextBoxCursorIndex(
+				TargetElement,
+				TargetElement._SelectionAnchorIndex or TargetElement._SelectionStartIndex
+			)
+		else
+			NativeTextInputTextBox.SelectionStart = -1
+		end
 		NativeTextInputState.Synchronizing = false
-		Window:SetInputBlocking("Typing", false)
 
 		-- CaptureFocus is deferred until the pointer callback finishes. Roblox can
-		-- otherwise discard a focus request that occurs inside the same touch event
-		-- which selected the Drawing control.
+		-- otherwise discard a focus request made inside the same mouse or touch
+		-- event that selected the Drawing control.
 		task.defer(function()
 			if not Window._Destroyed
 				and Window._Visible
 				and NativeTextInputState.TargetElement == TargetElement then
-				pcall(NativeTextInputState.CaptureFocus, NativeTextInputTextBox)
+				local FocusCaptureSucceeded = pcall(
+					NativeTextInputState.CaptureFocus,
+					NativeTextInputTextBox
+				)
+				if not FocusCaptureSucceeded then
+					-- There is intentionally no manual keyboard editor. If the
+					-- executor cannot focus Roblox's native TextBox, return the
+					-- Drawing control to an honest unfocused state.
+					NativeTextInputState.TargetElement = nil
+					TargetElement._IsFocused = false
+					TargetElement._CursorVisible = false
+					TargetElement._SelectionDragging = false
+					ClearTextBoxSelection(TargetElement)
+					Window._ActiveTextSelectionBox = nil
+					Window:RecalculateLayout()
+				end
 			end
 		end)
 		return true
@@ -3581,8 +3602,16 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
+		local CurrentTargetElement = NativeTextInputState.TargetElement
 		NativeTextInputState.TargetElement = nil
 		pcall(NativeTextInputState.ReleaseFocus, NativeTextInputState.TextBox, false)
+		if CurrentTargetElement then
+			CurrentTargetElement._IsFocused = false
+			CurrentTargetElement._CursorVisible = false
+			CurrentTargetElement._SelectionDragging = false
+			ClearTextBoxSelection(CurrentTargetElement)
+		end
+		Window._ActiveTextSelectionBox = nil
 	end
 
 	function Window:DestroyNativeTextInput()
@@ -3593,7 +3622,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 		Window:ReleaseNativeTextInput()
 		if NativeTextInputState.ScreenGui then
-			pcall(NativeTextInputState.ScreenGui.Destroy, NativeTextInputState.ScreenGui)
+			pcall(DestroyInstance, NativeTextInputState.ScreenGui)
 		end
 		NativeTextInputState.Available = false
 		NativeTextInputState.ScreenGui = nil
@@ -3805,10 +3834,20 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._Height = TextBoxMetrics.BaseHeight + GetTextBoxSuggestionDropdownHeight(Element)
 				end
 				if Element._Type == "Slider" then
-					Element._TrackPositionX = Element._PositionX
-					Element._TrackPositionY = Element._PositionY + Theme.ElementFontSize + 4
-					Element._TrackTotalWidth = ElementAvailableWidth
-					Element._TrackTotalHeight = 6
+					-- The visual track starts and ends at the thumb centers. Reserving
+					-- the maximum hover radius on both sides keeps the complete circle
+					-- inside the element at minimum and maximum values.
+					local SliderHorizontalInset = math.min(
+						Theme.SliderThumbHoverRadius,
+						ElementAvailableWidth / 2
+					)
+					Element._TrackPositionX = Element._PositionX + SliderHorizontalInset
+					Element._TrackPositionY = Element._PositionY + Theme.ElementFontSize + 5
+					Element._TrackTotalWidth = math.max(
+						1,
+						ElementAvailableWidth - SliderHorizontalInset * 2
+					)
+					Element._TrackTotalHeight = Theme.SliderTrackHeight
 				elseif Element._Type == "ColorPicker" then
 					Element._SwatchSize = Theme.ColorSwatchSize
 					Element._SwatchPositionX = Element._PositionX + ElementAvailableWidth - Element._SwatchSize - 5
@@ -3986,7 +4025,12 @@ function Library:CreateWindow(WindowConfiguration)
 							local PipX = ElementAbsolutePosition.X + ElementAbsoluteSize.X - 14
 							local PipY = ElementAbsolutePosition.Y + Element._Height / 2
 							local PipColor = Theme.ToggleInactive:Lerp(Theme.ToggleActive, Element._ActiveFactor or 0)
-							ApplyDrawingProperties(Element._IndicatorDrawing, { Position = Vector2.new(PipX, PipY), Color = PipColor, Visible = IsElementVisible })
+							ApplyDrawingProperties(Element._IndicatorDrawing, {
+								Position = Vector2.new(PipX, PipY),
+								Radius = Theme.ToggleIndicatorRadius,
+								Color = PipColor,
+								Visible = IsElementVisible,
+							})
 						end
 					elseif Element._Type == "TextBox" then
 						local TextBoxMetrics = GetTextBoxLayoutMetrics(Element, ElementAbsolutePosition, ElementAbsoluteSize.X)
@@ -4269,7 +4313,7 @@ function Library:CreateWindow(WindowConfiguration)
 						local SliderTextMetrics = Theme:GetSliderTextLayoutMetrics(
 							Element,
 							ElementAbsolutePosition,
-							Element._TrackTotalWidth
+							Element._AvailableWidth or Element._TrackTotalWidth
 						)
 						if Element._LabelDrawing then
 							ApplyDrawingProperties(Element._LabelDrawing, {
@@ -4290,8 +4334,16 @@ function Library:CreateWindow(WindowConfiguration)
 							})
 						end
 
-						local TrackHeight = LerpValue(8, 10, Element._HoverFactor or 0)
-						local TrackAbsolutePosition = ElementAbsolutePosition + Vector2.new(0, Theme.ElementFontSize + 5)
+						local TrackHeight = LerpValue(
+							Theme.SliderTrackHeight,
+							Theme.SliderTrackHoverHeight,
+							Element._HoverFactor or 0
+						)
+						local TrackAbsolutePosition = Vector2.new(
+							WindowPosition.X + Element._TrackPositionX,
+							WindowPosition.Y + Element._TrackPositionY - Window._ScrollOffset
+								- (TrackHeight - Theme.SliderTrackHeight) / 2
+						)
 						local TrackAbsoluteSize = Vector2.new(Element._TrackTotalWidth, TrackHeight)
 
 						if Element._TrackBackgroundDrawing then
@@ -4315,7 +4367,15 @@ function Library:CreateWindow(WindowConfiguration)
 								Visible = IsElementVisible,
 							})
 						end
-						local ThumbRadius = LerpValue(7, 9, Element._ThumbHoverFactor or 0)
+						local ThumbRadius = LerpValue(
+							Theme.SliderThumbRadius,
+							Theme.SliderThumbHoverRadius,
+							Element._ThumbHoverFactor or 0
+						)
+						ThumbRadius = math.min(
+							ThumbRadius,
+							(Element._AvailableWidth or Element._TrackTotalWidth) / 2
+						)
 						local ThumbColor = Theme.SliderTrackFill:Lerp(
 							Theme.SliderTrackFillHover,
 							Element._ThumbHoverFactor or 0
@@ -5247,13 +5307,19 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		Window._Visible = IsVisible
-		SetDrawingObjectsVisibility(Window._DrawingObjects, IsVisible)
 		if IsVisible then
+			SetDrawingObjectsVisibility(Window._DrawingObjects, true)
 			-- Reopening must rebuild positions and clipping before any retained object
 			-- is allowed to remain visible. This prevents the previous hidden frame
 			-- from flashing at stale coordinates after a move or resize.
 			Window:RecalculateLayout()
 		else
+			-- WindowTrackedDrawings is the authoritative retained-mode registry. It
+			-- includes section controls, inline symbols, executor locks, popups, and
+			-- every other drawing created after the initial window shell. Hiding the
+			-- complete registry prevents a late layout or animation pass from leaving
+			-- isolated controls visible after the window itself has disappeared.
+			SetDrawingObjectsVisibility(WindowTrackedDrawings, false)
 			UpdateElementsVisibility()
 		end
 		Window:UpdateTouchLauncherDrawings()
@@ -5311,7 +5377,6 @@ function Library:CreateWindow(WindowConfiguration)
 			Window:SetInputBlocking("Scroll", false)
 			Window:SetInputBlocking("Camera", false)
 			Window:SetInputBlocking("Interface", false)
-			Window:SetInputBlocking("Typing", false)
 			Window._ScrollSinkActive = false
 			Window._CameraSinkActive = false
 			Window._InterfaceSinkActive = false
@@ -5337,8 +5402,20 @@ function Library:CreateWindow(WindowConfiguration)
 			PositionY = Window._Position.Y,
 			WindowWidth = Theme.WindowWidth,
 			WindowVisibleHeight = Window._VisibleHeight,
-			DeviceProfile = Window._DeviceProfile,
 		}
+	end
+
+	function Window:GetGeometrySignature()
+		-- Geometry watchers only need a stable comparison key. Keeping its format
+		-- in the library prevents every consumer from rebuilding the same string.
+		local Geometry = Window:GetGeometry()
+		return string.format(
+			"%.0f:%.0f:%.0f:%.0f",
+			Geometry.PositionX,
+			Geometry.PositionY,
+			Geometry.WindowWidth,
+			Geometry.WindowVisibleHeight
+		)
 	end
 
 	function GetTextBounds(Text, FontSize)
@@ -5746,6 +5823,7 @@ function Library:CreateWindow(WindowConfiguration)
 				if ValueChanged then
 					Element:RefreshSuggestions()
 				end
+				Window:SynchronizeNativeTextInputValue(Element)
 				if not SuppressCallback and (ValueChanged or ForceCallback) then
 					InvokeCallback(Element._Callback, Element._Value)
 				end
@@ -5912,7 +5990,7 @@ function Library:CreateWindow(WindowConfiguration)
 				Element._IndicatorDrawing = CreateTrackedDrawingObject("Circle")
 				ApplyDrawingProperties(Element._IndicatorDrawing, {
 					Filled = true,
-					Radius = 5,
+					Radius = Theme.ToggleIndicatorRadius,
 					NumSides = 48,
 					Transparency = 1,
 					ZIndex = 13,
@@ -6088,17 +6166,30 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 
 				local PreviousValue = Element._Value
-				Element._Options = NewOptions or {}
+				local NormalizedOptions = {}
+				for OptionIndex, OptionValue in ipairs(NewOptions or {}) do
+					NormalizedOptions[OptionIndex] = OptionValue
+				end
+				Element._Options = NormalizedOptions
 				Element._ItemDrawingObjects = {}
 
 				local PreviousValueStillExists = false
+				local RequestedDefaultExists = false
 				for OptionIndex, OptionValue in ipairs(Element._Options) do
 					if OptionValue == PreviousValue then
 						PreviousValueStillExists = true
-						break
+					end
+					if NewDefault ~= nil and OptionValue == NewDefault then
+						RequestedDefaultExists = true
 					end
 				end
-				Element._Value = NewDefault or (PreviousValueStillExists and PreviousValue) or Element._Options[1] or ""
+				if RequestedDefaultExists then
+					Element._Value = NewDefault
+				elseif PreviousValueStillExists then
+					Element._Value = PreviousValue
+				else
+					Element._Value = Element._Options[1] or ""
+				end
 
 				for OptionIndex, OptionText in ipairs(Element._Options) do
 					local ItemData = {
@@ -6594,7 +6685,6 @@ function Library:CreateWindow(WindowConfiguration)
 		Window:SetInputBlocking("Scroll", false)
 		Window:SetInputBlocking("Camera", false)
 		Window:SetInputBlocking("Interface", false)
-		Window:SetInputBlocking("Typing", false)
 		Library:ClearInputBlockingForWindow(Window)
 
 		for ConnectionIndex, Connection in ipairs(Window._Connections) do
@@ -6692,28 +6782,6 @@ function Library:CreateWindow(WindowConfiguration)
 			return false
 		end
 
-		-- Geometry belongs to the device profile that produced it. Reject desktop
-		-- dimensions on touch screens and touch dimensions on personal computers;
-		-- otherwise a misdetected previous session can permanently preserve an
-		-- oversized mobile window or a miniature desktop window.
-		if Geometry.DeviceProfile and Geometry.DeviceProfile ~= Window._DeviceProfile then
-			local Camera = GetCurrentCamera()
-			local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
-			if Window._TouchInputAvailable then
-				Window:ApplyTouchViewportGeometry(
-					ViewportSize,
-					Window._CurrentViewportScale or 1,
-					true
-				)
-			end
-			Window._Position = ClampWindowPosition(Vector2.new(
-				(ViewportSize.X - Theme.WindowWidth) / 2,
-				(ViewportSize.Y - Theme.TitleBarHeight - Window._VisibleHeight) / 2
-			))
-			Window:RecalculateLayout()
-			return true
-		end
-
 		local NewWindowWidth = tonumber(Geometry.WindowWidth)
 		local NewVisibleHeight = tonumber(Geometry.WindowVisibleHeight)
 		if NewWindowWidth and NewVisibleHeight then
@@ -6807,7 +6875,6 @@ function Library:CreateWindow(WindowConfiguration)
 			ClearTextBoxSelection(Window._SearchTextBox)
 		end
 		Window._ActiveTextSelectionBox = nil
-		Window:SetInputBlocking("Typing", false)
 		if ShouldRecalculateLayout then
 			Window:RecalculateLayout()
 		end
@@ -6829,17 +6896,26 @@ function Library:CreateWindow(WindowConfiguration)
 			Metrics.MaximumCharacters
 		)
 
+		-- Cursor geometry is prepared before focus so the hidden native editor
+		-- opens at the exact character selected through the Drawing control.
+		TextBoxElement._SelectionAnchorIndex = CursorIndex
+		SetTextBoxCursorIndex(TextBoxElement, CursorIndex)
+		ClearTextBoxSelection(TextBoxElement)
+		if not Window:FocusNativeTextInput(TextBoxElement) then
+			TextBoxElement._IsFocused = false
+			TextBoxElement._CursorVisible = false
+			TextBoxElement._SelectionDragging = false
+			Window._ActiveTextSelectionBox = nil
+			return false
+		end
+
 		TextBoxElement._IsFocused = true
 		TextBoxElement._CursorVisible = true
 		TextBoxElement._CursorBlinkTime = tick()
 		TextBoxElement._SelectionDragging = true
-		TextBoxElement._SelectionAnchorIndex = CursorIndex
-		SetTextBoxCursorIndex(TextBoxElement, CursorIndex)
-		ClearTextBoxSelection(TextBoxElement)
 		Window._ActiveTextSelectionBox = TextBoxElement
-		if not Window:FocusNativeTextInput(TextBoxElement) then
-			Window:SetInputBlocking("Typing", true)
-		end
+		Window:SynchronizeNativeTextInputSelection(TextBoxElement)
+		return true
 	end
 
 	local function UpdateActiveTextBoxMouseSelection(MousePosition)
@@ -6868,27 +6944,33 @@ function Library:CreateWindow(WindowConfiguration)
 		)
 
 		SetTextBoxSelectionRange(TextBoxElement, TextBoxElement._SelectionAnchorIndex or CursorIndex, CursorIndex)
+		Window:SynchronizeNativeTextInputSelection(TextBoxElement)
 	end
 
 	local function SetSearchTextBoxFocus(IsFocused)
-		-- Search uses the same typing sink as normal text boxes, but it is not
-		-- stored inside a section. This helper keeps the focus flag, cursor, and
-		-- input blocking synchronized for every search interaction path.
-		Window._SearchTextBox._IsFocused = IsFocused == true
-		if not Window._SearchTextBox._IsFocused then
+		-- Search is not stored inside a section, but it uses the same native
+		-- TextBox bridge and focus lifecycle as every regular text field.
+		local ShouldFocus = IsFocused == true
+		if not ShouldFocus then
 			Window:ReleaseNativeTextInput(Window._SearchTextBox)
+			Window._SearchTextBox._IsFocused = false
 			Window._SearchTextBox._CursorVisible = false
 			Window._SearchTextBox._CursorBlinkTime = 0
 			Window._SearchTextBox._SelectionDragging = false
 			ClearTextBoxSelection(Window._SearchTextBox)
+			return false
 		end
-		if Window._SearchTextBox._IsFocused then
-			if not Window:FocusNativeTextInput(Window._SearchTextBox) then
-				Window:SetInputBlocking("Typing", true)
-			end
-		else
-			Window:SetInputBlocking("Typing", false)
+
+		if not Window:FocusNativeTextInput(Window._SearchTextBox) then
+			Window._SearchTextBox._IsFocused = false
+			Window._SearchTextBox._CursorVisible = false
+			return false
 		end
+
+		Window._SearchTextBox._IsFocused = true
+		Window._SearchTextBox._CursorVisible = true
+		Window._SearchTextBox._CursorBlinkTime = tick()
+		return true
 	end
 
 	local function SetSearchActive(IsActive, ShouldResetQuery)
@@ -7055,11 +7137,11 @@ function Library:CreateWindow(WindowConfiguration)
 		Window:RecalculateLayout()
 	end
 
-	table.insert(Window._Connections, WindowFocusReleasedConnect(UserInputService.WindowFocusReleased, NewCClosure(function()
+	table.insert(Window._Connections, ConnectSignal(UserInputService.WindowFocusReleased, NewCClosure(function()
 		WindowHasFocus = false
 		PreviousSecondaryMouseButtonState = false
 	end)))
-	table.insert(Window._Connections, WindowFocusedConnect(UserInputService.WindowFocused, NewCClosure(function()
+	table.insert(Window._Connections, ConnectSignal(UserInputService.WindowFocused, NewCClosure(function()
 		WindowHasFocus = true
 	end)))
 
@@ -7252,7 +7334,7 @@ function Library:CreateWindow(WindowConfiguration)
 		return true
 	end
 
-	table.insert(Window._Connections, InputBeganSignalConnect(UserInputService.InputBegan, NewCClosure(function(InputObject)
+	table.insert(Window._Connections, ConnectSignal(UserInputService.InputBegan, NewCClosure(function(InputObject)
 		if Window._Destroyed then
 			return
 		end
@@ -7288,7 +7370,7 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 	end)))
 
-	table.insert(Window._Connections, InputChangedSignalConnect(UserInputService.InputChanged, NewCClosure(function(InputObject)
+	table.insert(Window._Connections, ConnectSignal(UserInputService.InputChanged, NewCClosure(function(InputObject)
 		if InputObject.UserInputType ~= Enum.UserInputType.Touch or Window._Destroyed then
 			return
 		end
@@ -7296,7 +7378,7 @@ function Library:CreateWindow(WindowConfiguration)
 		Window:ProcessTouchInput(Enum.UserInputState.Change, InputObject)
 	end)))
 
-	table.insert(Window._Connections, InputEndedSignalConnect(UserInputService.InputEnded, NewCClosure(function(InputObject)
+	table.insert(Window._Connections, ConnectSignal(UserInputService.InputEnded, NewCClosure(function(InputObject)
 		if InputObject.UserInputType == Enum.UserInputType.Touch then
 			Window:ProcessTouchInput(Enum.UserInputState.End, InputObject)
 			return
@@ -7454,8 +7536,9 @@ function Library:CreateWindow(WindowConfiguration)
 					if Range == 0 then Range = 1 end
 					local NormalizedValue = math.clamp((Value - (Element._MinValue or 0)) / Range, 0, 1)
 					local ThumbX = TrackAbsolutePositionX + math.floor((Element._TrackTotalWidth or Element._Width) * NormalizedValue)
-					local ThumbY = TrackAbsolutePositionY + 4
-					local ThumbHitSize = 14
+					local ThumbY = TrackAbsolutePositionY
+						+ (Element._TrackTotalHeight or Theme.SliderTrackHeight) / 2
+					local ThumbHitSize = Theme.SliderThumbHoverRadius + 5
 					Element._IsThumbHovered = IsElementVisible
 						and ThumbY + ThumbHitSize > AllowedMinimumPositionY
 						and ThumbY - ThumbHitSize < AllowedMaximumPositionY
@@ -7651,13 +7734,24 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 	end
 
-	local InterfaceFrameConnection = InterfaceFrameSignalConnect(InterfaceFrameSignal, NewCClosure(function(DeltaTime)
+	local InterfaceFrameConnection = ConnectSignal(InterfaceFrameSignal, NewCClosure(function(DeltaTime)
 		if Window._Destroyed then return end
-		if not Window._Visible and PrimaryMouseButtonHeld then
-			-- A keyboard hide or external visibility change can occur while a finger
-			-- is still down. Release the local capture immediately so the stale touch
-			-- cannot keep future interactions in a permanently held state.
-			ReleasePrimaryPointerCapture()
+		if not Library._Visible or not Window._Visible then
+			if PrimaryMouseButtonHeld then
+				-- A keyboard hide or external visibility change can occur while a
+				-- pointer is still down. Release the local capture immediately so the
+				-- stale input cannot keep future interactions permanently held.
+				ReleasePrimaryPointerCapture()
+			end
+
+			if not UseImmediateMode then
+				-- Treat hidden retained windows as an atomic render state on every
+				-- frame. This also repairs visibility if a setter or an already queued
+				-- layout pass touched an individual drawing after SetVisible returned.
+				SetDrawingObjectsVisibility(WindowTrackedDrawings, false)
+				Window:UpdateTouchLauncherDrawings()
+			end
+			return
 		end
 
 		local DeltaSeconds = DeltaTime or 0.0167
@@ -8019,7 +8113,6 @@ function Library:CreateWindow(WindowConfiguration)
 
 						elseif Element._Type == "TextBox" then
 							if Element._HoveredSuggestionIndex and Element:ApplySuggestion(Element._HoveredSuggestionIndex) then
-								Window:SetInputBlocking("Typing", false)
 								return
 							end
 							ClearFocusedTextBoxes()
@@ -8053,7 +8146,7 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 	end))
 
-	table.insert(Window._Connections, InputChangedSignalConnect(UserInputService.InputChanged, NewCClosure(function()
+	table.insert(Window._Connections, ConnectSignal(UserInputService.InputChanged, NewCClosure(function()
 		if not Window._Visible or Window._Destroyed then return end
 		if not UserInputService.OnScreenKeyboardVisible then return end
 
@@ -8074,7 +8167,9 @@ function Library:CreateWindow(WindowConfiguration)
 	table.insert(Library._Windows, Window)
 
 	if UseImmediateMode and DrawingImmediateGetPaint then
-		local PaintConnection = DrawingImmediateGetPaint(1):Connect(NewCClosure(function()
+		local PaintSignal = DrawingImmediateGetPaint(1)
+		local ConnectToPaintSignal = CloneFunction(PaintSignal.Connect)
+		local PaintConnection = ConnectToPaintSignal(PaintSignal, NewCClosure(function()
 			if Window._Destroyed then
 				return
 			end
@@ -8483,18 +8578,20 @@ function Library:CreateWindow(WindowConfiguration)
 							local PipX = WindowPosition.X + Element._PositionX + ElementSize.X - 14
 							local PipY = ElementYPosition + Element._Height / 2
 							local PipColor = Theme.ToggleInactive:Lerp(Theme.ToggleActive, Element._ActiveFactor or 0)
-							if PipY - 5 >= AllowedMinY and PipY + 5 <= AllowedMaxY then
-								-- Potassium builds that misrender FilledCircle as a
-								-- triangle still implement rounded rectangles
-								-- consistently. A fully rounded ten-pixel square
-								-- produces the same solid indicator without any
-								-- separate glyph inside the toggle.
-								DrawingImmediateFilledRectangle(
-									Vector2.new(PipX - 5, PipY - 5),
-									Vector2.new(10, 10),
+							local ToggleIndicatorRadius = Theme.ToggleIndicatorRadius
+							if PipY - ToggleIndicatorRadius >= AllowedMinY
+								and PipY + ToggleIndicatorRadius <= AllowedMaxY
+							then
+								-- Use the documented FilledCircle signature through
+								-- the same helper as retained toggle and slider pips.
+								-- Dropdown arrows remain the only triangular control
+								-- indicators in the complete interface.
+								DrawImmediateSolidCircle(
+									Vector2.new(PipX, PipY),
+									ToggleIndicatorRadius,
 									PipColor,
 									1,
-									5
+									64
 								)
 							end
 						elseif Element._Type == "TextBox" then
@@ -8721,7 +8818,7 @@ function Library:CreateWindow(WindowConfiguration)
 							local SliderTextMetrics = Theme:GetSliderTextLayoutMetrics(
 								Element,
 								Vector2.new(WindowPosition.X + Element._PositionX, ElementYPosition),
-								Element._TrackTotalWidth
+								Element._AvailableWidth or Element._TrackTotalWidth
 							)
 							local TextY = SliderTextMetrics.LabelPosition.Y
 							if TextY >= AllowedMinY and TextY + Theme.ElementFontSize <= AllowedMaxY then
@@ -8736,8 +8833,17 @@ function Library:CreateWindow(WindowConfiguration)
 								)
 							end
 
-							local TrackPosition = Vector2.new(WindowPosition.X + (Element._TrackPositionX or Element._PositionX), ElementYPosition + Theme.ElementFontSize + 5)
-							local TrackHeight = LerpValue(8, 10, Element._HoverFactor or 0)
+							local TrackHeight = LerpValue(
+								Theme.SliderTrackHeight,
+								Theme.SliderTrackHoverHeight,
+								Element._HoverFactor or 0
+							)
+							local TrackPosition = Vector2.new(
+								WindowPosition.X + (Element._TrackPositionX or Element._PositionX),
+								WindowPosition.Y + (Element._TrackPositionY or Element._PositionY)
+									- Window._ScrollOffset
+									- (TrackHeight - Theme.SliderTrackHeight) / 2
+							)
 							local TrackSize = Vector2.new(Element._TrackTotalWidth, TrackHeight)
 							local NormalizedValue = math.clamp((Value - Minimum) / Range, 0, 1)
 							local FillWidth = math.floor(Element._TrackTotalWidth * NormalizedValue)
@@ -8756,7 +8862,15 @@ function Library:CreateWindow(WindowConfiguration)
 								end
 							end
 
-							local ThumbRadius = LerpValue(7, 9, Element._ThumbHoverFactor or 0)
+							local ThumbRadius = LerpValue(
+								Theme.SliderThumbRadius,
+								Theme.SliderThumbHoverRadius,
+								Element._ThumbHoverFactor or 0
+							)
+							ThumbRadius = math.min(
+								ThumbRadius,
+								(Element._AvailableWidth or Element._TrackTotalWidth) / 2
+							)
 							local ThumbColor = Theme.SliderTrackFill:Lerp(
 								Theme.SliderTrackFillHover,
 								Element._ThumbHoverFactor or 0
@@ -9226,12 +9340,13 @@ function Library:CreateWindow(WindowConfiguration)
 	local ViewportConnection
 	local function ConnectViewport()
 		if ViewportConnection then
-			ViewportConnection:Disconnect()
+			pcall(ViewportConnection.Disconnect, ViewportConnection)
 			ViewportConnection = nil
 		end
 		local Camera = GetCurrentCamera()
 		if Camera then
-			ViewportConnection = Camera:GetPropertyChangedSignal("ViewportSize"):Connect(NewCClosure(function()
+			local ViewportSizeChangedSignal = GetPropertyChangedSignal(Camera, "ViewportSize")
+			ViewportConnection = ConnectSignal(ViewportSizeChangedSignal, NewCClosure(function()
 				UpdateViewportScale()
 				Window:RecalculateLayout()
 			end))
@@ -9239,7 +9354,8 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 	end
 
-	local CameraConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(NewCClosure(function()
+	local CurrentCameraChangedSignal = GetPropertyChangedSignal(Workspace, "CurrentCamera")
+	local CameraConnection = ConnectSignal(CurrentCameraChangedSignal, NewCClosure(function()
 		ConnectViewport()
 		UpdateViewportScale()
 		Window:RecalculateLayout()
@@ -9250,7 +9366,11 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Roblox can rebuild the top bar after orientation, chat, menu, or safe-area
 		-- changes without changing the camera viewport. Track TopbarInset directly
 		-- so the retained launcher follows the panel just as immediate mode does.
-		local TopbarInsetConnection = GraphicalUserInterfaceService:GetPropertyChangedSignal("TopbarInset"):Connect(NewCClosure(function()
+		local TopbarInsetChangedSignal = GetPropertyChangedSignal(
+			GraphicalUserInterfaceService,
+			"TopbarInset"
+		)
+		local TopbarInsetConnection = ConnectSignal(TopbarInsetChangedSignal, NewCClosure(function()
 			Window:UpdateTouchLauncherDrawings()
 		end))
 		table.insert(Window._Connections, TopbarInsetConnection)
@@ -9318,9 +9438,13 @@ function Library:ClearInputBlockingForWindow(Window)
 end
 
 function Library:SetInputBlocking(Type, Enabled)
+	if not SupportedInputBlockingTypes[Type] then
+		return false
+	end
+
 	local ShouldEnable = Enabled == true
 	if Library._ActiveSinkStates[Type] == ShouldEnable then
-		return
+		return true
 	end
 
 	Library._ActiveSinkStates[Type] = ShouldEnable
@@ -9419,24 +9543,9 @@ function Library:SetInputBlocking(Type, Enabled)
 				Enum.UserInputType.MouseButton2,
 				Enum.UserInputType.MouseWheel
 			)
-		elseif Type == "Typing" then
-			local function TypingSink(ActionName, InputState, InputObject)
-				if InputObject and InputObject.UserInputType == Enum.UserInputType.MouseWheel then
-					Library:ProcessMouseWheel(InputObject)
-				end
-				return Enum.ContextActionResult.Sink
-			end
-
-			BindCoreActionAtPriority(
-				ContextActionService,
-				NewName,
-				TypingSink,
-				false,
-				Priority,
-				table.unpack(TextEntryInputObjects)
-			)
 		end
 	end
+	return true
 end
 
 return Library

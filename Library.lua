@@ -264,19 +264,24 @@ if typeof(DrawingImmediate) == "table" then
 	end
 end
 
--- Render a solid circular marker through the documented Potassium signature:
--- center, radius, color, number of sides, and opacity. The rounded-rectangle
--- fallback is retained only for DrawingImmediate implementations that expose an
--- outline circle without FilledCircle. No triangle primitive participates in
--- toggle, slider, title, or inline markers.
+-- Render a solid circular marker without relying on FilledCircle. Several
+-- DrawingImmediate builds expose that function with incompatible parameter
+-- orders, which can turn a requested circle into a three-sided polygon. A
+-- maximally rounded square is geometrically circular and its parameter order is
+-- stable. The thick outline-circle fallback covers unusually limited runtimes.
+-- Dropdown arrows remain the only triangular control indicators.
 local function DrawImmediateSolidCircle(Center, Radius, Color, Opacity, NumberOfSides)
 	local SafeRadius = math.max(1, tonumber(Radius) or 1)
-	local SafeOpacity = tonumber(Opacity) or 1
-	local SafeNumberOfSides = math.max(16, math.floor(tonumber(NumberOfSides) or 64))
+	local SafeOpacity = math.clamp(tonumber(Opacity) or 1, 0, 1)
+	local SafeNumberOfSides = math.clamp(
+		math.floor(tonumber(NumberOfSides) or 64),
+		16,
+		250
+	)
 
-	if DrawingImmediateFilledCircle then
-		DrawingImmediateFilledCircle(Center, SafeRadius, Color, SafeNumberOfSides, SafeOpacity)
-	elseif DrawingImmediateFilledRectangle then
+	-- A square whose rounding equals half its size has circular geometry and uses
+	-- the same FilledRectangle signature in every supported Potassium build.
+	if DrawingImmediateFilledRectangle then
 		local Diameter = SafeRadius * 2
 		DrawingImmediateFilledRectangle(
 			Center - Vector2.new(SafeRadius, SafeRadius),
@@ -288,7 +293,7 @@ local function DrawImmediateSolidCircle(Center, Radius, Color, Opacity, NumberOf
 	end
 
 	if DrawingImmediateCircle then
-		local OutlineThickness = (DrawingImmediateFilledCircle or DrawingImmediateFilledRectangle) and 1 or SafeRadius
+		local OutlineThickness = DrawingImmediateFilledRectangle and 1 or SafeRadius
 		DrawingImmediateCircle(Center, SafeRadius, Color, SafeOpacity, SafeNumberOfSides, OutlineThickness)
 	end
 end
@@ -566,9 +571,12 @@ Theme = {
 
 	-- Notification stack dimensions and lifetime.
 	NotificationWidth    = 320,
+	NotificationMaximumWidth = 520,
 	NotificationHeight   = 44,
 	NotificationDuration = 5,
 	NotificationMargin   = 12,
+	NotificationHorizontalPadding = 12,
+	NotificationVerticalPadding = 9,
 	TooltipDelay         = 3,
 	TooltipWidth         = 340,
 	TooltipPadding       = 11,
@@ -1171,27 +1179,79 @@ local function GetViewportSize()
 	return Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
 end
 
-local function GetNotificationStackPosition(TargetPosition, StackIndex, StackEntryCount)
-	local ViewportSize = GetViewportSize()
-	local StackSpacing = Theme.NotificationHeight + Theme.NotificationMargin
-	local SafeStackEntryCount = math.max(1, tonumber(StackEntryCount) or StackIndex + 1)
-	local DownwardStackBottom = TargetPosition.Y + (SafeStackEntryCount - 1) * StackSpacing + Theme.NotificationHeight
-	local UpwardStackTop = TargetPosition.Y - (SafeStackEntryCount - 1) * StackSpacing
-	local CanStackDownward = DownwardStackBottom <= ViewportSize.Y - Theme.NotificationMargin
-	local CanStackUpward = UpwardStackTop >= Theme.NotificationMargin
-	local StackDirection = (not CanStackDownward and CanStackUpward) and -1 or 1
-	local StackOffsetY = StackIndex * StackSpacing * StackDirection
-	local RightSideX = TargetPosition.X + Theme.WindowWidth + Theme.NotificationMargin
-	local LeftSideX = TargetPosition.X - Theme.NotificationWidth - Theme.NotificationMargin
-	local PositionX = RightSideX
+local function GetNotificationEntrySize(NotificationEntry)
+	local NotificationSize = NotificationEntry and NotificationEntry.Size
+	if typeof(NotificationSize) == "Vector2" then
+		return NotificationSize
+	end
+	return Vector2.new(Theme.NotificationWidth, Theme.NotificationHeight)
+end
 
-	if RightSideX + Theme.NotificationWidth > ViewportSize.X - Theme.NotificationMargin then
-		PositionX = math.max(Theme.NotificationMargin, LeftSideX)
+-- Notification entries can have different dimensions after word wrapping. The
+-- complete stack is therefore laid out cumulatively instead of multiplying an
+-- index by one fixed height. The stack prefers the right side of the window,
+-- moves to the left when necessary, and remains fully inside the viewport.
+local function GetNotificationStackPositions(TargetPosition, NotificationEntries)
+	local ViewportSize = GetViewportSize()
+	local ViewportMargin = Theme.NotificationMargin
+	local TotalStackHeight = 0
+
+	for NotificationIndex, NotificationEntry in ipairs(NotificationEntries) do
+		TotalStackHeight = TotalStackHeight + GetNotificationEntrySize(NotificationEntry).Y
+		if NotificationIndex < #NotificationEntries then
+			TotalStackHeight = TotalStackHeight + Theme.NotificationMargin
+		end
 	end
 
-	local MaximumY = math.max(Theme.NotificationMargin, ViewportSize.Y - Theme.NotificationHeight - Theme.NotificationMargin)
-	local PositionY = math.clamp(TargetPosition.Y + StackOffsetY, Theme.NotificationMargin, MaximumY)
-	return Vector2.new(PositionX, PositionY)
+	local MaximumStackTop = math.max(
+		ViewportMargin,
+		ViewportSize.Y - TotalStackHeight - ViewportMargin
+	)
+	local StackTopPositionY
+	if TargetPosition.Y + TotalStackHeight <= ViewportSize.Y - ViewportMargin then
+		StackTopPositionY = TargetPosition.Y
+	elseif TargetPosition.Y - TotalStackHeight >= ViewportMargin then
+		StackTopPositionY = TargetPosition.Y - TotalStackHeight
+	else
+		StackTopPositionY = math.clamp(
+			TargetPosition.Y,
+			ViewportMargin,
+			MaximumStackTop
+		)
+	end
+
+	local NotificationPositions = {}
+	local CurrentPositionY = StackTopPositionY
+	for NotificationIndex, NotificationEntry in ipairs(NotificationEntries) do
+		local NotificationSize = GetNotificationEntrySize(NotificationEntry)
+		local RightSidePositionX = TargetPosition.X
+			+ Theme.WindowWidth
+			+ Theme.NotificationMargin
+		local LeftSidePositionX = TargetPosition.X
+			- NotificationSize.X
+			- Theme.NotificationMargin
+		local MaximumPositionX = math.max(
+			ViewportMargin,
+			ViewportSize.X - NotificationSize.X - ViewportMargin
+		)
+		local PositionX = RightSidePositionX
+		if RightSidePositionX + NotificationSize.X
+			> ViewportSize.X - ViewportMargin
+		then
+			PositionX = LeftSidePositionX
+		end
+		PositionX = math.clamp(PositionX, ViewportMargin, MaximumPositionX)
+
+		NotificationPositions[NotificationIndex] = Vector2.new(
+			PositionX,
+			CurrentPositionY
+		)
+		CurrentPositionY = CurrentPositionY
+			+ NotificationSize.Y
+			+ Theme.NotificationMargin
+	end
+
+	return NotificationPositions
 end
 
 -- Move every retained Drawing object belonging to one notification. Immediate
@@ -1199,12 +1259,15 @@ end
 -- keeps both rendering backends on the same geometry path.
 local function SetNotificationEntryPosition(NotificationEntry, NotificationPosition)
 	NotificationEntry.Position = NotificationPosition
+	local NotificationSize = GetNotificationEntrySize(NotificationEntry)
 
 	if NotificationEntry.Background then
 		SetRenderProperty(NotificationEntry.Background, "Position", NotificationPosition)
+		SetRenderProperty(NotificationEntry.Background, "Size", NotificationSize)
 	end
 	if NotificationEntry.Border then
 		SetRenderProperty(NotificationEntry.Border, "Position", NotificationPosition)
+		SetRenderProperty(NotificationEntry.Border, "Size", NotificationSize)
 	end
 	if NotificationEntry.AccentLine then
 		SetRenderProperty(NotificationEntry.AccentLine, "From", Vector2.new(
@@ -1213,13 +1276,16 @@ local function SetNotificationEntryPosition(NotificationEntry, NotificationPosit
 		))
 		SetRenderProperty(NotificationEntry.AccentLine, "To", Vector2.new(
 			NotificationPosition.X + 3,
-			NotificationPosition.Y + Theme.NotificationHeight - 4
+			NotificationPosition.Y + NotificationSize.Y - 4
 		))
 	end
-	if NotificationEntry.TextLabel then
-		SetRenderProperty(NotificationEntry.TextLabel, "Position", Vector2.new(
-			NotificationPosition.X + 12,
-			NotificationPosition.Y + (Theme.NotificationHeight - Theme.ElementFontSize) / 2
+	local TextStartPositionY = NotificationPosition.Y
+		+ (NotificationEntry.TextStartOffsetY or Theme.NotificationVerticalPadding)
+	for TextLineIndex, TextLabel in ipairs(NotificationEntry.TextLabels or {}) do
+		SetRenderProperty(TextLabel, "Position", Vector2.new(
+			NotificationPosition.X + Theme.NotificationHorizontalPadding,
+			TextStartPositionY
+				+ (TextLineIndex - 1) * FontLineHeight(Theme.ElementFontSize)
 		))
 	end
 end
@@ -1227,10 +1293,14 @@ end
 -- Recalculate a complete notification stack from its current window position.
 -- This is called during drag, resize, viewport changes, and stack expiration.
 local function RepositionNotificationStack(NotificationEntries, TargetPosition)
+	local NotificationPositions = GetNotificationStackPositions(
+		TargetPosition,
+		NotificationEntries
+	)
 	for NotificationIndex, NotificationEntry in ipairs(NotificationEntries) do
 		SetNotificationEntryPosition(
 			NotificationEntry,
-			GetNotificationStackPosition(TargetPosition, NotificationIndex - 1, #NotificationEntries)
+			NotificationPositions[NotificationIndex]
 		)
 	end
 end
@@ -2047,6 +2117,7 @@ function Library:GetRenderingBackends()
 			GetPaint = DrawingImmediateGetPaint,
 			Line = DrawingImmediateLine,
 			Circle = DrawingImmediateCircle,
+			SolidCircle = DrawImmediateSolidCircle,
 			FilledCircle = DrawingImmediateFilledCircle,
 			Rectangle = DrawingImmediateRectangle,
 			FilledRectangle = DrawingImmediateFilledRectangle,
@@ -2139,23 +2210,74 @@ function Library:Destroy()
 	DestroyTrackedDrawingTable(NotificationTrackedDrawings)
 end
 
--- Truncates notification text so it never overflows the fixed-width box.
--- The available area starts 12 px from the left and leaves a 4 px right margin.
-local function TruncateNotificationText(Text)
-	local Ratio = Theme.FontCharWidthRatio or 0.52
-	local CharWidth = Theme.ElementFontSize * (Ratio * 1.15)
-	local AvailableWidth = Theme.NotificationWidth - 16
-	local MaxChars = math.max(1, math.floor(AvailableWidth / CharWidth))
-	if #Text <= MaxChars then
-		return Text
+-- Measure a notification from its complete text. Short messages expand
+-- horizontally, while longer messages wrap at the configured maximum width and
+-- increase the box height. No content is replaced with an ellipsis.
+local function GetNotificationLayout(NotificationText)
+	local ViewportSize = GetViewportSize()
+	local MaximumViewportWidth = math.max(
+		1,
+		ViewportSize.X - Theme.NotificationMargin * 2
+	)
+	local MinimumNotificationWidth = math.min(
+		Theme.NotificationWidth,
+		MaximumViewportWidth
+	)
+	local MaximumNotificationWidth = math.max(
+		MinimumNotificationWidth,
+		math.min(
+			Theme.NotificationMaximumWidth or Theme.NotificationWidth,
+			MaximumViewportWidth
+		)
+	)
+	local CharacterWidth = Theme.ElementFontSize
+		* ((Theme.FontCharWidthRatio or 0.52) * 1.15)
+	local LongestExplicitLineLength = 0
+
+	for ExplicitLine in string.gmatch(
+		string.format("%s\n", NotificationText),
+		"([^\n]*)\n"
+	) do
+		LongestExplicitLineLength = math.max(
+			LongestExplicitLineLength,
+			#ExplicitLine
+		)
 	end
-	return string.format("%s...", string.sub(Text, 1, math.max(1, MaxChars - 3)))
+
+	local DesiredNotificationWidth = math.ceil(
+		LongestExplicitLineLength * CharacterWidth
+			+ Theme.NotificationHorizontalPadding * 2
+	)
+	local NotificationWidth = math.clamp(
+		DesiredNotificationWidth,
+		MinimumNotificationWidth,
+		MaximumNotificationWidth
+	)
+	local WrappedLines = WrapText(
+		NotificationText,
+		math.max(
+			1,
+			NotificationWidth - Theme.NotificationHorizontalPadding * 2
+		),
+		Theme.ElementFontSize
+	)
+	local TextHeight = #WrappedLines * FontLineHeight(Theme.ElementFontSize)
+	local NotificationHeight = math.max(
+		Theme.NotificationHeight,
+		TextHeight + Theme.NotificationVerticalPadding * 2
+	)
+
+	return {
+		Lines = WrappedLines,
+		Size = Vector2.new(NotificationWidth, NotificationHeight),
+		TextStartOffsetY = math.floor((NotificationHeight - TextHeight) / 2),
+	}
 end
 
 -- Show a transient notification next to a window or at a fixed screen position.
 -- Window-specific notifications move with the window's notification stack.
 function Library:ShowNotification(NotificationText, WindowOrPosition)
-	NotificationText = TruncateNotificationText(tostring(NotificationText or ""))
+	NotificationText = tostring(NotificationText or "")
 	if not DrawingBackendAvailable then
 		return
 	end
@@ -2172,15 +2294,19 @@ function Library:ShowNotification(NotificationText, WindowOrPosition)
 		TargetPosition = Vector2.new(100, 100)
 	end
 
-	local ActiveNotificationsList = TargetWindow and TargetWindow._ActiveNotifications or Library.ActiveNotifications
-	local NotificationPosition = GetNotificationStackPosition(
-		TargetPosition,
-		#ActiveNotificationsList,
-		#ActiveNotificationsList + 1
-	)
+	local ActiveNotificationsList = TargetWindow
+		and TargetWindow._ActiveNotifications
+		or Library.ActiveNotifications
+	local NotificationLayout = GetNotificationLayout(NotificationText)
+	local NotificationPosition = TargetPosition
 
 	local NotificationEntry = {
 		Text = NotificationText,
+		Lines = NotificationLayout.Lines,
+		Size = NotificationLayout.Size,
+		TextStartOffsetY = NotificationLayout.TextStartOffsetY,
+		Duration = Theme.NotificationDuration
+			+ math.max(0, #NotificationLayout.Lines - 1) * 0.65,
 		Position = NotificationPosition,
 		CreatedAt = tick(),
 		Window = TargetWindow,
@@ -2193,19 +2319,19 @@ function Library:ShowNotification(NotificationText, WindowOrPosition)
 		local NotificationBackground = CreateNotificationRectangleDrawing(Theme.NotificationBackground, true, 100, 0.95)
 		ApplyDrawingProperties(NotificationBackground, {
 			Position = NotificationPosition,
-			Size = Vector2.new(Theme.NotificationWidth, Theme.NotificationHeight),
+			Size = NotificationEntry.Size,
 		})
 
 		local NotificationBorder = CreateNotificationRectangleDrawing(Theme.NotificationBorder, false, 101, 0.8)
 		ApplyDrawingProperties(NotificationBorder, {
 			Position = NotificationPosition,
-			Size = Vector2.new(Theme.NotificationWidth, Theme.NotificationHeight),
+			Size = NotificationEntry.Size,
 		})
 
 		local NotificationAccentLine = CreateNotificationDrawingObject("Line")
 		ApplyDrawingProperties(NotificationAccentLine, {
 			From = Vector2.new(NotificationPosition.X + 3, NotificationPosition.Y + 4),
-			To = Vector2.new(NotificationPosition.X + 3, NotificationPosition.Y + Theme.NotificationHeight - 4),
+			To = Vector2.new(NotificationPosition.X + 3, NotificationPosition.Y + NotificationEntry.Size.Y - 4),
 			Thickness = 2,
 			Transparency = 1,
 			Color = Theme.NotificationAccent,
@@ -2213,44 +2339,60 @@ function Library:ShowNotification(NotificationText, WindowOrPosition)
 			Visible = true,
 		})
 
-		local NotificationTextLabel = CreateNotificationTextDrawing(
-			NotificationText,
-			Theme.ElementFontSize,
-			Theme.NotificationText,
-			102
-		)
-		ApplyDrawingProperties(NotificationTextLabel, {
-			Position = Vector2.new(
-				NotificationPosition.X + 12,
-				NotificationPosition.Y + (Theme.NotificationHeight - Theme.ElementFontSize) / 2
-			),
-			Transparency = 0.95,
-		})
+		local NotificationTextLabels = {}
+		for TextLineIndex, TextLine in ipairs(NotificationEntry.Lines) do
+			local NotificationTextLabel = CreateNotificationTextDrawing(
+				TextLine,
+				Theme.ElementFontSize,
+				Theme.NotificationText,
+				102
+			)
+			ApplyDrawingProperties(NotificationTextLabel, {
+				Position = Vector2.new(
+					NotificationPosition.X + Theme.NotificationHorizontalPadding,
+					NotificationPosition.Y
+						+ NotificationEntry.TextStartOffsetY
+						+ (TextLineIndex - 1)
+							* FontLineHeight(Theme.ElementFontSize)
+				),
+				Transparency = 0.95,
+			})
+			table.insert(NotificationTextLabels, NotificationTextLabel)
+		end
 
 		NotificationEntry.Background = NotificationBackground
 		NotificationEntry.Border = NotificationBorder
 		NotificationEntry.AccentLine = NotificationAccentLine
-		NotificationEntry.TextLabel = NotificationTextLabel
-
-		task.delay(Theme.NotificationDuration, function()
-			DestroyDrawing(NotificationBackground, NotificationTrackedDrawings)
-			DestroyDrawing(NotificationBorder, NotificationTrackedDrawings)
-			DestroyDrawing(NotificationAccentLine, NotificationTrackedDrawings)
-			DestroyDrawing(NotificationTextLabel, NotificationTrackedDrawings)
-		end)
+		NotificationEntry.TextLabels = NotificationTextLabels
 	end
 
-	task.delay(Theme.NotificationDuration, function()
-		-- Collapse the notification stack after this entry expires.
+	task.delay(NotificationEntry.Duration, function()
+		-- Expire retained drawings and the stack entry atomically. A window may be
+		-- destroyed before this timer fires, so cleanup only runs while the entry
+		-- is still owned by its active notification list.
+		local NotificationWasActive = false
 		for EntryIndex, Entry in ipairs(ActiveNotificationsList) do
 			if Entry == NotificationEntry then
 				table.remove(ActiveNotificationsList, EntryIndex)
-				local CurrentTargetPosition = TargetWindow and TargetWindow._Position or TargetPosition
-				RepositionNotificationStack(ActiveNotificationsList, CurrentTargetPosition)
-
+				NotificationWasActive = true
 				break
 			end
 		end
+		if not NotificationWasActive then
+			return
+		end
+
+		if not UseImmediateMode then
+			DestroyDrawing(NotificationEntry.Background, NotificationTrackedDrawings)
+			DestroyDrawing(NotificationEntry.Border, NotificationTrackedDrawings)
+			DestroyDrawing(NotificationEntry.AccentLine, NotificationTrackedDrawings)
+			for TextLineIndex, NotificationTextLabel in ipairs(NotificationEntry.TextLabels or {}) do
+				DestroyDrawing(NotificationTextLabel, NotificationTrackedDrawings)
+			end
+		end
+
+		local CurrentTargetPosition = TargetWindow and TargetWindow._Position or TargetPosition
+		RepositionNotificationStack(ActiveNotificationsList, CurrentTargetPosition)
 	end)
 
 	table.insert(ActiveNotificationsList, NotificationEntry)
@@ -3652,10 +3794,18 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 
 				if IsMatch then
+					-- Search result rows have a fixed height, so embedded line
+					-- breaks from information labels must be collapsed before the
+					-- result is painted. Otherwise one match can draw through the
+					-- following rows and make the complete overlay unreadable.
+					local SingleLineMatchText = tostring(MatchText)
+						:gsub("%s+", " ")
+						:gsub("^%s+", "")
+						:gsub("%s+$", "")
 					table.insert(Window._SearchResults, {
 						Section = Section,
 						Element = Element,
-						Text = string.format("[%s] > %s", Section._Title, MatchText)
+						Text = string.format("[%s] > %s", Section._Title, SingleLineMatchText)
 					})
 					if #Window._SearchResults >= 5 then
 						break
@@ -6678,7 +6828,9 @@ function Library:CreateWindow(WindowConfiguration)
 			DestroyDrawing(Entry.Background, NotificationTrackedDrawings)
 			DestroyDrawing(Entry.Border, NotificationTrackedDrawings)
 			DestroyDrawing(Entry.AccentLine, NotificationTrackedDrawings)
-			DestroyDrawing(Entry.TextLabel, NotificationTrackedDrawings)
+			for TextLineIndex, NotificationTextLabel in ipairs(Entry.TextLabels or {}) do
+				DestroyDrawing(NotificationTextLabel, NotificationTrackedDrawings)
+			end
 			table.remove(Window._ActiveNotifications, EntryIndex)
 		end
 
@@ -8582,10 +8734,9 @@ function Library:CreateWindow(WindowConfiguration)
 							if PipY - ToggleIndicatorRadius >= AllowedMinY
 								and PipY + ToggleIndicatorRadius <= AllowedMaxY
 							then
-								-- Use the documented FilledCircle signature through
-								-- the same helper as retained toggle and slider pips.
-								-- Dropdown arrows remain the only triangular control
-								-- indicators in the complete interface.
+								-- Use the stable rounded-square circle helper shared by
+								-- toggle and slider indicators. Dropdown arrows remain
+								-- the only triangular controls in the interface.
 								DrawImmediateSolidCircle(
 									Vector2.new(PipX, PipY),
 									ToggleIndicatorRadius,
@@ -9027,8 +9178,7 @@ function Library:CreateWindow(WindowConfiguration)
 				DrawImmediateTextBoxSelectionAndCursor(
 					Window._SearchTextBox,
 					SearchBarPosition.X + 24,
-					SearchBarPosition.Y,
-					20,
+					SearchBarPosition.Y + (20 - Theme.ElementFontSize) / 2,
 					CharacterWidth,
 					MaxQueryChars,
 					ViewportStart,
@@ -9266,18 +9416,36 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			for NotificationIndex, Entry in ipairs(PaintNotificationsList) do
-				DrawingImmediateFilledRectangle(Entry.Position, Vector2.new(Theme.NotificationWidth, Theme.NotificationHeight), Theme.NotificationBackground, 1, 0)
-				DrawingImmediateRectangle(Entry.Position, Vector2.new(Theme.NotificationWidth, Theme.NotificationHeight), Theme.NotificationBorder, 0.8, 0, 1)
+				-- Keep this fallback local to the paint callback. Referencing another
+				-- outer helper here would exceed Lua 5.1's upvalue limit for CreateWindow.
+				local NotificationSize = typeof(Entry.Size) == "Vector2"
+					and Entry.Size
+					or Vector2.new(Theme.NotificationWidth, Theme.NotificationHeight)
+				DrawingImmediateFilledRectangle(Entry.Position, NotificationSize, Theme.NotificationBackground, 1, 0)
+				DrawingImmediateRectangle(Entry.Position, NotificationSize, Theme.NotificationBorder, 0.8, 0, 1)
 
 				DrawingImmediateLine(
 					Vector2.new(Entry.Position.X + 3, Entry.Position.Y + 4),
-					Vector2.new(Entry.Position.X + 3, Entry.Position.Y + Theme.NotificationHeight - 4),
+					Vector2.new(Entry.Position.X + 3, Entry.Position.Y + NotificationSize.Y - 4),
 					Theme.NotificationAccent, 1, 2
 				)
-				DrawingImmediateText(
-					Vector2.new(Entry.Position.X + 12, Entry.Position.Y + (Theme.NotificationHeight - Theme.ElementFontSize) / 2),
-					Theme.Font, Theme.ElementFontSize, Theme.NotificationText, 1, Entry.Text, false
-				)
+				for TextLineIndex, TextLine in ipairs(Entry.Lines or { Entry.Text }) do
+					DrawingImmediateText(
+						Vector2.new(
+							Entry.Position.X + Theme.NotificationHorizontalPadding,
+							Entry.Position.Y
+								+ (Entry.TextStartOffsetY or Theme.NotificationVerticalPadding)
+								+ (TextLineIndex - 1)
+									* FontLineHeight(Theme.ElementFontSize)
+						),
+						Theme.Font,
+						Theme.ElementFontSize,
+						Theme.NotificationText,
+						1,
+						TextLine,
+						false
+					)
+				end
 			end
 		end))
 		table.insert(Window._Connections, PaintConnection)

@@ -3034,7 +3034,9 @@ function Library:CreateWindow(WindowConfiguration)
 		TitleBarAccentWashDrawing = CreateRectangleDrawing(Theme.TitleBarAccentWash, true, 4, 0.34)
 		ApplyDrawingProperties(TitleBarAccentWashDrawing, {
 			Position = WindowConfiguration.Position,
-			Size = Vector2.new(Theme.WindowWidth * 0.55, Theme.TitleBarHeight),
+			-- Keep one continuous title-bar color instead of ending the accent wash
+			-- halfway across the header and exposing a different right side.
+			Size = Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight),
 		})
 
 		TitleBarBorderDrawing = CreateRectangleDrawing(Theme.WindowBorder, false, 4, 0.8)
@@ -4971,7 +4973,7 @@ function Library:CreateWindow(WindowConfiguration)
 			})
 			ApplyDrawingProperties(TitleBarAccentWashDrawing, {
 				Position = WindowPosition,
-				Size = Vector2.new(Theme.WindowWidth * 0.58, Theme.TitleBarHeight),
+				Size = Vector2.new(Theme.WindowWidth, Theme.TitleBarHeight),
 				Color = Theme.TitleBarAccentWash,
 				Visible = Window._Visible,
 			})
@@ -8413,7 +8415,7 @@ function Library:CreateWindow(WindowConfiguration)
 			local TitleBarSize = Vector2.new(WindowWidth, Theme.TitleBarHeight)
 			DrawingImmediateFilledRectangle(WindowPosition, TitleBarSize, Theme.TitleBarBackground, 1, 0)
 			DrawingImmediateFilledRectangle(WindowPosition, Vector2.new(WindowWidth, math.max(6, Theme.TitleBarHeight * 0.45)), Theme.TitleBarHighlight, 0.32, 0)
-			DrawingImmediateFilledRectangle(WindowPosition, Vector2.new(WindowWidth * 0.58, Theme.TitleBarHeight), Theme.TitleBarAccentWash, 0.34, 0)
+			DrawingImmediateFilledRectangle(WindowPosition, TitleBarSize, Theme.TitleBarAccentWash, 0.34, 0)
 			Window._TitleBarHovered = IsPointInsideRectangle(CurrentMousePosition, WindowPosition, TitleBarSize)
 			local ResizeGripSize = GetWindowResizeGripHitSize(Window)
 			Window._ResizeGripRegion = {

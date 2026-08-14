@@ -4,83 +4,63 @@
 local CloneFunction, CloneReference, NewCClosure
 
 -- Executor-only controls must distinguish native runtime functions from Lua
--- compatibility shims. debug.info is part of the required baseline for this
--- project, so every capability check can share this single implementation.
-local DebugInformation = debug.info
-
+-- compatibility shims. debug.info is used directly so the capability contract
+-- cannot drift behind a cached alias.
 local function IsNativeExecutorFunction(TargetFunction)
 	if typeof(TargetFunction) ~= "function" then
 		return false
 	end
 
-	local DebugInformationReadSucceeded, FunctionSource = pcall(
-		DebugInformation,
+	local InspectionSucceeded, FunctionSource = pcall(
+		debug.info,
 		TargetFunction,
 		"s"
 	)
 
-	return DebugInformationReadSucceeded and FunctionSource == "[C]"
+	return InspectionSucceeded and FunctionSource == "[C]"
 end
 
 do
-	-- Prefer native clonefunc/clonefunction only when debug.info confirms that
-	-- the implementation is C-backed. Lua replacements are treated as unsafe
-	-- wrappers and intentionally ignored.
-	local RawCloneFunction = clonefunc or clonefunction or clone_function
-	local CloneFunctionIsNative = IsNativeExecutorFunction(RawCloneFunction)
+	-- Resolve executor compatibility as one contract instead of repeating the
+	-- same native-function branching three times.
+	local RawCloneFunction, RawCloneReference, RawNewCClosure =
+		clonefunc or clonefunction or clone_function,
+		cloneref or clone_ref or clonereference,
+		newcclosure
+	local CloneFunctionIsNative, CloneReferenceIsNative, NewCClosureIsNative =
+		IsNativeExecutorFunction(RawCloneFunction),
+		IsNativeExecutorFunction(RawCloneReference),
+		IsNativeExecutorFunction(RawNewCClosure)
 
-	if RawCloneFunction and CloneFunctionIsNative then
-		CloneFunction = RawCloneFunction
-	else
-		-- Identity fallback keeps call sites simple when no native clone exists.
-		CloneFunction = function(TargetFunction)
-			return TargetFunction
-		end
+	CloneFunction = CloneFunctionIsNative and RawCloneFunction or function(TargetFunction)
+		return TargetFunction
 	end
 
-	-- cloneref prevents some environments from returning hooked Instance
-	-- references. The identity fallback is still valid in standard Luau.
-	local RawCloneReference = cloneref or clone_ref or clonereference
-	local CloneReferenceIsNative = IsNativeExecutorFunction(RawCloneReference)
-
-	if RawCloneReference and CloneReferenceIsNative then
-		CloneReference = RawCloneReference
-	else
-		-- Identity fallback lets the library run outside executor-specific APIs.
-		CloneReference = function(TargetReference)
-			return TargetReference
-		end
+	CloneReference = CloneReferenceIsNative and RawCloneReference or function(TargetReference)
+		return TargetReference
 	end
 
-	-- newcclosure is useful for callbacks that should look native to hooks, but
-	-- a plain Lua closure is enough when the runtime does not expose it.
-	local RawNewCClosure = newcclosure
-	local NewCClosureIsNative = IsNativeExecutorFunction(RawNewCClosure)
-
-	if RawNewCClosure and NewCClosureIsNative then
-		NewCClosure = RawNewCClosure
-	else
-		-- Keep the same call signature whether or not newcclosure exists.
-		NewCClosure = function(TargetFunction)
-			return TargetFunction
-		end
+	NewCClosure = NewCClosureIsNative and RawNewCClosure or function(TargetFunction)
+		return TargetFunction
 	end
-
 end
 
-local UserInputService, RunService, ContextActionService, GraphicalUserInterfaceService, CoreGui, Workspace
+local UserInputService, RunService, ContextActionService,
+	GraphicalUserInterfaceService, CoreGui, Workspace
 local DrawingLibrary = Drawing
 local WriteClipboardText = setclipboard or toclipboard or set_clipboard
 local DataModel = CloneReference(game)
-local GetService = CloneFunction(DataModel.GetService)
-local IsDataModelLoaded = CloneFunction(DataModel.IsLoaded)
-local DataModelLoadedSignal = DataModel.Loaded
-local WaitForDataModelLoaded = CloneFunction(DataModelLoadedSignal.Wait)
-local CreateInstance = CloneFunction(Instance.new)
-local DestroyInstance = CloneFunction(DataModel.Destroy)
-local FindFirstChild = CloneFunction(DataModel.FindFirstChild)
-local GetPropertyChangedSignal = CloneFunction(DataModel.GetPropertyChangedSignal)
-local ConnectSignal
+local GetService, IsDataModelLoaded, DataModelLoadedSignal, WaitForDataModelLoaded,
+	CreateInstance, DestroyInstance, FindFirstChild, GetPropertyChangedSignal, ConnectSignal =
+	CloneFunction(DataModel.GetService),
+	CloneFunction(DataModel.IsLoaded),
+	DataModel.Loaded,
+	CloneFunction(DataModel.Loaded.Wait),
+	CloneFunction(Instance.new),
+	CloneFunction(DataModel.Destroy),
+	CloneFunction(DataModel.FindFirstChild),
+	CloneFunction(DataModel.GetPropertyChangedSignal),
+	nil
 
 -- Roblox exposes a one-shot Loaded signal specifically for initialization.
 -- Check IsLoaded first because waiting after the signal has already fired would
@@ -92,41 +72,41 @@ end
 do
 	-- Cache services through cloned methods/references so the rest of the
 	-- library avoids repeated service lookups and reduces exposure to hooks.
-	UserInputService     = CloneReference(GetService(DataModel, "UserInputService"))
-	RunService           = CloneReference(GetService(DataModel, "RunService"))
-	ContextActionService = CloneReference(GetService(DataModel, "ContextActionService"))
-	GraphicalUserInterfaceService = CloneReference(GetService(DataModel, "GuiService"))
-	CoreGui              = CloneReference(GetService(DataModel, "CoreGui"))
-	Workspace            = CloneReference(GetService(DataModel, "Workspace"))
+	UserInputService, RunService, ContextActionService,
+		GraphicalUserInterfaceService, CoreGui, Workspace =
+		CloneReference(GetService(DataModel, "UserInputService")),
+		CloneReference(GetService(DataModel, "RunService")),
+		CloneReference(GetService(DataModel, "ContextActionService")),
+		CloneReference(GetService(DataModel, "GuiService")),
+		CloneReference(GetService(DataModel, "CoreGui")),
+		CloneReference(GetService(DataModel, "Workspace"))
 	-- The generic RBXScriptSignal connection method is cached only after the
 	-- cloned RunService reference is available.
 	ConnectSignal = CloneFunction(RunService.Heartbeat.Connect)
 end
 
-local GetMouseLocation, IsMouseButtonPressed, GetMouseButtonsPressed
-local GetDeviceType
-local GetGraphicalUserInterfaceInset
-local InterfaceFrameSignal
-local BindCoreActionAtPriority, UnbindCoreAction
+local GetMouseLocation, IsMouseButtonPressed, GetMouseButtonsPressed, GetDeviceType,
+	GetGraphicalUserInterfaceInset, InterfaceFrameSignal,
+	BindCoreActionAtPriority, UnbindCoreAction
 
 do
-	-- Method references are copied once and called with explicit self later.
-	-- This keeps hot input/render paths shorter and more predictable.
-	GetMouseLocation     = CloneFunction(UserInputService.GetMouseLocation)
-	IsMouseButtonPressed = CloneFunction(UserInputService.IsMouseButtonPressed)
-
-	GetMouseButtonsPressed   = typeof(UserInputService.GetMouseButtonsPressed) == "function"
-		and CloneFunction(UserInputService.GetMouseButtonsPressed)
-		or function() return {} end
-	GetDeviceType            = typeof(UserInputService.GetDeviceType) == "function"
-		and CloneFunction(UserInputService.GetDeviceType)
-		or function() return "Unknown" end
-	GetGraphicalUserInterfaceInset = CloneFunction(GraphicalUserInterfaceService.GetGuiInset)
-
-	InterfaceFrameSignal = RunService.PreRender or RunService.RenderStepped or RunService.Heartbeat
-
-	BindCoreActionAtPriority = CloneFunction(ContextActionService.BindCoreActionAtPriority)
-	UnbindCoreAction         = CloneFunction(ContextActionService.UnbindCoreAction)
+	-- Cache the complete input/render method set in one assignment so optional
+	-- fallbacks and required native methods remain visibly part of one contract.
+	GetMouseLocation, IsMouseButtonPressed, GetMouseButtonsPressed, GetDeviceType,
+		GetGraphicalUserInterfaceInset, InterfaceFrameSignal,
+		BindCoreActionAtPriority, UnbindCoreAction =
+		CloneFunction(UserInputService.GetMouseLocation),
+		CloneFunction(UserInputService.IsMouseButtonPressed),
+		typeof(UserInputService.GetMouseButtonsPressed) == "function"
+			and CloneFunction(UserInputService.GetMouseButtonsPressed)
+			or function() return {} end,
+		typeof(UserInputService.GetDeviceType) == "function"
+			and CloneFunction(UserInputService.GetDeviceType)
+			or function() return "Unknown" end,
+		CloneFunction(GraphicalUserInterfaceService.GetGuiInset),
+		RunService.PreRender or RunService.RenderStepped or RunService.Heartbeat,
+		CloneFunction(ContextActionService.BindCoreActionAtPriority),
+		CloneFunction(ContextActionService.UnbindCoreAction)
 end
 
 local SetRenderProperty, GetRenderProperty
@@ -134,8 +114,9 @@ local SetRenderProperty, GetRenderProperty
 do
 	-- Some Drawing implementations expose setrenderproperty/getrenderproperty;
 	-- others are simple Lua tables. These wrappers normalize both models.
-	local RawSetRenderProperty = typeof(setrenderproperty) == "function"
-		and CloneFunction(setrenderproperty)
+	local RawSetRenderProperty, RawGetRenderProperty =
+		typeof(setrenderproperty) == "function" and CloneFunction(setrenderproperty),
+		typeof(getrenderproperty) == "function" and CloneFunction(getrenderproperty)
 
 	SetRenderProperty = function(TargetObject, PropertyName, PropertyValue)
 		-- Native property writes are protected because Drawing objects may be
@@ -149,9 +130,6 @@ do
 			end
 		end
 	end
-
-	local RawGetRenderProperty = typeof(getrenderproperty) == "function"
-		and CloneFunction(getrenderproperty)
 
 	GetRenderProperty = function(TargetObject, PropertyName)
 		-- Returning nil is safer than surfacing render-backend errors to callers.
@@ -171,12 +149,8 @@ do
 
 end
 
-local SelectedBackend = 0
-
-local UseImmediateMode        = false
-local DrawingBackendAvailable = false
-
-local DrawingIsNative = false
+local SelectedBackend, UseImmediateMode, DrawingBackendAvailable, DrawingIsNative =
+	0, false, false, false
 
 -- Native Drawing.new is preferred. When it is absent or Lua-backed, the library
 -- attempts to load a replacement Drawing implementation before falling back.
@@ -232,31 +206,29 @@ if not DrawingIsNative then
 		end
 	end
 end
-local DrawingImmediateLine            = nil
-local DrawingImmediateCircle          = nil
-local DrawingImmediateFilledCircle    = nil
-local DrawingImmediateRectangle       = nil
-local DrawingImmediateFilledRectangle = nil
-local DrawingImmediateQuad            = nil
-local DrawingImmediateFilledQuad      = nil
-local DrawingImmediateText            = nil
-local DrawingImmediateOutlinedText    = nil
-local DrawingImmediateGetPaint        = nil
+local DrawingImmediateLine, DrawingImmediateCircle, DrawingImmediateFilledCircle,
+	DrawingImmediateRectangle, DrawingImmediateFilledRectangle,
+	DrawingImmediateQuad, DrawingImmediateFilledQuad, DrawingImmediateText,
+	DrawingImmediateOutlinedText, DrawingImmediateGetPaint
 
 -- Cache DrawingImmediate primitives whenever the executor exposes them, even
 -- when the main interface itself was forced to use retained Drawing. Feature
 -- pages can then select either backend independently through GetRenderingBackends.
 if typeof(DrawingImmediate) == "table" then
-	DrawingImmediateLine            = typeof(DrawingImmediate.Line)            == "function" and CloneFunction(DrawingImmediate.Line)
-	DrawingImmediateCircle          = typeof(DrawingImmediate.Circle)          == "function" and CloneFunction(DrawingImmediate.Circle)
-	DrawingImmediateFilledCircle    = typeof(DrawingImmediate.FilledCircle)    == "function" and CloneFunction(DrawingImmediate.FilledCircle)
-	DrawingImmediateRectangle       = typeof(DrawingImmediate.Rectangle)       == "function" and CloneFunction(DrawingImmediate.Rectangle)
-	DrawingImmediateFilledRectangle = typeof(DrawingImmediate.FilledRectangle) == "function" and CloneFunction(DrawingImmediate.FilledRectangle)
-	DrawingImmediateQuad            = typeof(DrawingImmediate.Quad)            == "function" and CloneFunction(DrawingImmediate.Quad)
-	DrawingImmediateFilledQuad      = typeof(DrawingImmediate.FilledQuad)      == "function" and CloneFunction(DrawingImmediate.FilledQuad)
-	DrawingImmediateText            = typeof(DrawingImmediate.Text)            == "function" and CloneFunction(DrawingImmediate.Text)
-	DrawingImmediateOutlinedText    = typeof(DrawingImmediate.OutlinedText)    == "function" and CloneFunction(DrawingImmediate.OutlinedText)
-	DrawingImmediateGetPaint        = typeof(DrawingImmediate.GetPaint)        == "function" and CloneFunction(DrawingImmediate.GetPaint)
+	DrawingImmediateLine, DrawingImmediateCircle, DrawingImmediateFilledCircle,
+		DrawingImmediateRectangle, DrawingImmediateFilledRectangle,
+		DrawingImmediateQuad, DrawingImmediateFilledQuad, DrawingImmediateText,
+		DrawingImmediateOutlinedText, DrawingImmediateGetPaint =
+		typeof(DrawingImmediate.Line) == "function" and CloneFunction(DrawingImmediate.Line),
+		typeof(DrawingImmediate.Circle) == "function" and CloneFunction(DrawingImmediate.Circle),
+		typeof(DrawingImmediate.FilledCircle) == "function" and CloneFunction(DrawingImmediate.FilledCircle),
+		typeof(DrawingImmediate.Rectangle) == "function" and CloneFunction(DrawingImmediate.Rectangle),
+		typeof(DrawingImmediate.FilledRectangle) == "function" and CloneFunction(DrawingImmediate.FilledRectangle),
+		typeof(DrawingImmediate.Quad) == "function" and CloneFunction(DrawingImmediate.Quad),
+		typeof(DrawingImmediate.FilledQuad) == "function" and CloneFunction(DrawingImmediate.FilledQuad),
+		typeof(DrawingImmediate.Text) == "function" and CloneFunction(DrawingImmediate.Text),
+		typeof(DrawingImmediate.OutlinedText) == "function" and CloneFunction(DrawingImmediate.OutlinedText),
+		typeof(DrawingImmediate.GetPaint) == "function" and CloneFunction(DrawingImmediate.GetPaint)
 
 	if (SelectedBackend == 0 or SelectedBackend == 1) and DrawingImmediateLine then
 		UseImmediateMode        = true
@@ -539,9 +511,11 @@ Theme = {
 	-- Monospace is intentionally reserved for feature renderers that explicitly
 	-- request code-like text rather than for the complete application surface.
 	Font            = 2,
-	TitleFontSize   = 18,
-	SectionFontSize = 15,
-	ElementFontSize = 14,
+	TitleFontSize           = 18,
+	HeaderSecondaryFontSize = 10,
+	SectionFontSize         = 15,
+	SectionMetaFontSize     = 10,
+	ElementFontSize         = 14,
 
 	FontCharWidthRatio = 0.5,
 
@@ -583,10 +557,10 @@ Theme = {
 	TooltipMaximumLines  = 8,
 }
 
--- Normalize rectangle rounding across retained and immediate renderers. Native
--- Drawing implementations that do not expose Square.Rounding safely ignore the
--- property through SetRenderProperty, while the bundled renderer and
--- DrawingImmediate both produce the same softly rounded control geometry.
+-- Normalize rectangle rounding across retained and immediate renderers. Normal
+-- controls stay square because every theme corner radius is zero; explicit
+-- nonzero requests are still honored for true geometric helpers such as the
+-- solid-circle fallback.
 do
 	local RawDrawingImmediateRectangle = DrawingImmediateRectangle
 	local RawDrawingImmediateFilledRectangle = DrawingImmediateFilledRectangle
@@ -1085,7 +1059,9 @@ local function GetWindowContentViewportYRange(Window, WindowPositionY)
 		+ Theme.TitleBarHeight
 		+ (Window._TabBarHeight or 0)
 		+ SearchBarHeightOffset
-	local ViewportEnd = WindowPositionY + Theme.TitleBarHeight + Window._VisibleHeight
+	local ViewportEnd = WindowPositionY
+		+ Theme.TitleBarHeight
+		+ Window._VisibleHeight
 	return ViewportStart, math.max(ViewportStart, ViewportEnd)
 end
 
@@ -1106,24 +1082,30 @@ local function GetWindowResizeGripHitSize(Window)
 	return math.max(18, Theme.InnerMargin)
 end
 
-local function GetMainScrollbarGeometry(Window, WindowPosition)
-	if Window._MaxScroll <= 0 then
+local function CreateScrollbarGeometry(
+	TrackPosition,
+	TrackHeight,
+	VisibleCanvasHeight,
+	CanvasHeight,
+	ScrollOffset,
+	MaximumScroll,
+	MinimumHandleHeight
+)
+	if TrackHeight <= 0 or VisibleCanvasHeight <= 0 or CanvasHeight <= 0 then
 		return nil
 	end
 
-	local ViewportStart, ViewportEnd = GetWindowContentViewportYRange(Window, WindowPosition.Y)
-	local ContentViewportHeight = math.max(0, ViewportEnd - ViewportStart)
-	local TrackHeight = math.max(0, ContentViewportHeight - 4)
-	if TrackHeight <= 0 then
-		return nil
-	end
-
-	local CanvasHeight = math.max(Window._CanvasHeight or Window._VisibleHeight, 1)
-	local RawHandleHeight = (ContentViewportHeight / CanvasHeight) * TrackHeight
-	local HandleHeight = math.clamp(RawHandleHeight, math.min(20, TrackHeight), TrackHeight)
-	local ScrollProgress = Window._MaxScroll > 0 and (Window._ScrollOffset / Window._MaxScroll) or 0
-	local TrackPosition = Vector2.new(WindowPosition.X + Theme.WindowWidth - Theme.ScrollbarWidth - 2, ViewportStart + 2)
-	local HandlePositionY = TrackPosition.Y + (TrackHeight - HandleHeight) * math.clamp(ScrollProgress, 0, 1)
+	local RawHandleHeight = (VisibleCanvasHeight / CanvasHeight) * TrackHeight
+	local HandleHeight = math.clamp(
+		RawHandleHeight,
+		math.min(MinimumHandleHeight, TrackHeight),
+		TrackHeight
+	)
+	local ScrollProgress = MaximumScroll > 0
+		and math.clamp((ScrollOffset or 0) / MaximumScroll, 0, 1)
+		or 0
+	local HandlePositionY = TrackPosition.Y
+		+ (TrackHeight - HandleHeight) * ScrollProgress
 
 	return {
 		TrackPosition = TrackPosition,
@@ -1137,36 +1119,62 @@ local function GetMainScrollbarGeometry(Window, WindowPosition)
 	}
 end
 
+local function GetMainScrollbarGeometry(Window, WindowPosition)
+	if Window._MaxScroll <= 0 then
+		return nil
+	end
+
+	local ViewportStart, ViewportEnd = GetWindowContentViewportYRange(
+		Window,
+		WindowPosition.Y
+	)
+	local ContentViewportHeight = math.max(0, ViewportEnd - ViewportStart)
+	local TrackHeight = math.max(0, ContentViewportHeight - 4)
+	local TrackPosition = Vector2.new(
+		WindowPosition.X + Theme.WindowWidth - Theme.ScrollbarWidth - 2,
+		ViewportStart + 2
+	)
+
+	return CreateScrollbarGeometry(
+		TrackPosition,
+		TrackHeight,
+		ContentViewportHeight,
+		math.max(Window._CanvasHeight or Window._VisibleHeight, 1),
+		Window._ScrollOffset,
+		Window._MaxScroll,
+		20
+	)
+end
+
 local function GetSectionScrollbarGeometry(Section, Window)
 	if not Section._MaxHeight or Section._SectionMaxScroll <= 0 then
 		return nil
 	end
 
-	local SectionAbsolutePosition = Window._Position + Vector2.new(Section._PositionX, Section._PositionY - Window._ScrollOffset)
+	local SectionAbsolutePosition = Window._Position + Vector2.new(
+		Section._PositionX,
+		Section._PositionY - Window._ScrollOffset
+	)
 	local VisibleSectionHeight = Section._ClippedHeight or Section._ContentHeight or 0
-	local TrackHeight = math.max(0, VisibleSectionHeight - Theme.ElementHeight - 4)
-	if TrackHeight <= 0 then
-		return nil
-	end
-
-	local CanvasHeight = math.max((Section._FullContentHeight or Section._ContentHeight or 0) - Theme.ElementHeight, 1)
 	local VisibleCanvasHeight = math.max(VisibleSectionHeight - Theme.ElementHeight, 1)
-	local RawHandleHeight = (VisibleCanvasHeight / CanvasHeight) * TrackHeight
-	local HandleHeight = math.clamp(RawHandleHeight, math.min(12, TrackHeight), TrackHeight)
-	local ScrollProgress = Section._SectionMaxScroll > 0 and (Section._SectionScrollOffset / Section._SectionMaxScroll) or 0
-	local TrackPosition = Vector2.new(SectionAbsolutePosition.X + Section._Width - Theme.ScrollbarWidth - 2, SectionAbsolutePosition.Y + Theme.ElementHeight + 2)
-	local HandlePositionY = TrackPosition.Y + (TrackHeight - HandleHeight) * math.clamp(ScrollProgress, 0, 1)
+	local TrackHeight = math.max(0, VisibleSectionHeight - Theme.ElementHeight - 4)
+	local TrackPosition = Vector2.new(
+		SectionAbsolutePosition.X + Section._Width - Theme.ScrollbarWidth - 2,
+		SectionAbsolutePosition.Y + Theme.ElementHeight + 2
+	)
 
-	return {
-		TrackPosition = TrackPosition,
-		TrackSize = Vector2.new(Theme.ScrollbarWidth, TrackHeight),
-		HitPosition = Vector2.new(TrackPosition.X - 2, TrackPosition.Y),
-		HitSize = Vector2.new(Theme.ScrollbarWidth + 4, TrackHeight),
-		HandlePosition = Vector2.new(TrackPosition.X, HandlePositionY),
-		HandleSize = Vector2.new(Theme.ScrollbarWidth, HandleHeight),
-		TrackHeight = TrackHeight,
-		HandleHeight = HandleHeight,
-	}
+	return CreateScrollbarGeometry(
+		TrackPosition,
+		TrackHeight,
+		VisibleCanvasHeight,
+		math.max(
+			(Section._FullContentHeight or Section._ContentHeight or 0) - Theme.ElementHeight,
+			1
+		),
+		Section._SectionScrollOffset,
+		Section._SectionMaxScroll,
+		12
+	)
 end
 
 local function GetCurrentCamera()
@@ -2430,7 +2438,9 @@ function Library:CreateWindow(WindowConfiguration)
 		MobileTheme.Font = 0
 		MobileTheme.FontCharWidthRatio = 0.5
 		MobileTheme.TitleFontSize = 19
+		MobileTheme.HeaderSecondaryFontSize = 10
 		MobileTheme.SectionFontSize = 15
+		MobileTheme.SectionMetaFontSize = 10
 		MobileTheme.ElementFontSize = 14
 		MobileTheme.WindowWidth = 640
 		MobileTheme.WindowVisibleHeight = 560
@@ -2440,9 +2450,9 @@ function Library:CreateWindow(WindowConfiguration)
 		MobileTheme.SectionPadding = 10
 		MobileTheme.InnerMargin = 12
 		MobileTheme.ScrollbarWidth = 8
-		MobileTheme.WindowCornerRadius = 8
-		MobileTheme.ControlCornerRadius = 6
-		MobileTheme.CompactCornerRadius = 4
+		MobileTheme.WindowCornerRadius = 0
+		MobileTheme.ControlCornerRadius = 0
+		MobileTheme.CompactCornerRadius = 0
 		MobileTheme.Base = nil
 		Theme = MobileTheme
 		Library.Theme = Theme
@@ -2451,7 +2461,9 @@ function Library:CreateWindow(WindowConfiguration)
 	if not Theme.Base then
 		Theme.Base = {
 			TitleFontSize = Theme.TitleFontSize,
+			HeaderSecondaryFontSize = Theme.HeaderSecondaryFontSize,
 			SectionFontSize = Theme.SectionFontSize,
+			SectionMetaFontSize = Theme.SectionMetaFontSize,
 			ElementFontSize = Theme.ElementFontSize,
 			WindowWidth = Theme.WindowWidth,
 			TitleBarHeight = Theme.TitleBarHeight,
@@ -2508,12 +2520,11 @@ function Library:CreateWindow(WindowConfiguration)
 		ScrollTarget = nil,
 	}
 
-	Window._Position = WindowConfiguration.Position
-
-	Window._Title = WindowConfiguration.Title
-
+	Window._Position, Window._Title, Window._Description =
+		WindowConfiguration.Position,
+		WindowConfiguration.Title,
+		tostring(WindowConfiguration.Description or WindowConfiguration.Subtitle or "")
 	Window._Sections = {}
-
 	Window._TotalHeight = Theme.TitleBarHeight
 
 	Window._Dragging = false
@@ -2557,6 +2568,11 @@ function Library:CreateWindow(WindowConfiguration)
 	Window._TabDrawings = {}
 	Window._TabScrollOffset = 0
 
+	function Window:SetDescription(DescriptionText)
+		Window._Description = tostring(DescriptionText or "")
+		return Window
+	end
+
 	function Window:SetInputBlocking(Type, Enabled)
 		Library:SetInputBlockingForWindow(Window, Type, Enabled)
 	end
@@ -2568,6 +2584,15 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 		return Window._Sections
 	end
+
+	function Window:GetHeaderMetaText()
+		local PageCount = #Window._Pages
+		if PageCount == 0 then
+			return "Page -- / --"
+		end
+		return string.format("Page %02d / %02d", Window._ActivePageIndex, PageCount)
+	end
+
 
 	local function NormalizeExecutorFunctionRequirements(Requirements)
 		-- A descriptor preserves the requested function name even when the
@@ -2972,26 +2997,15 @@ function Library:CreateWindow(WindowConfiguration)
 	Window.OnSave = function() end
 	Window.OnExit = function() end
 
-	local TitleBarBackgroundDrawing = nil
-	local TitleBarHighlightDrawing = nil
-	local TitleBarAccentWashDrawing = nil
-	local TitleBarBorderDrawing = nil
-	local TitleBarTextDrawing = nil
-	local WindowBodyBackgroundDrawing = nil
-	local WindowBodyTopSheenDrawing = nil
-	local WindowBodyBottomShadeDrawing = nil
-	local WindowBodyBorderDrawing = nil
-	local WindowBottomBorderDrawing = nil
-	local TitleAccentCircleDrawing = nil
-	local TitleAccentOuterGlowCircleDrawing = nil
-	local WindowTopAccentDrawing = nil
-	local TitleBarSeparatorDrawing = nil
-	local CloseButtonBackgroundDrawing = nil
-	local CloseButtonBorderDrawing = nil
-	local CloseButtonTextDrawing = nil
-	local TouchLauncherBackgroundDrawing = nil
-	local TouchLauncherBorderDrawing = nil
-	local TouchLauncherTextDrawing = nil
+	local TitleBarBackgroundDrawing, TitleBarHighlightDrawing, TitleBarAccentWashDrawing,
+		TitleBarBorderDrawing, TitleBarTextDrawing, TitleBarDescriptionDrawing,
+		TitleBarMetaDrawing, TitleBarActionSeparatorDrawing,
+		WindowBodyBackgroundDrawing, WindowBodyTopSheenDrawing,
+		WindowBodyBottomShadeDrawing, WindowBodyBorderDrawing,
+		TitleAccentCircleDrawing, TitleAccentOuterGlowCircleDrawing, WindowTopAccentDrawing,
+		TitleBarSeparatorDrawing, CloseButtonBackgroundDrawing, CloseButtonBorderDrawing,
+		CloseButtonTextDrawing, TouchLauncherBackgroundDrawing,
+		TouchLauncherBorderDrawing, TouchLauncherTextDrawing
 
 	if not UseImmediateMode and DrawingBackendAvailable then
 
@@ -3077,7 +3091,27 @@ function Library:CreateWindow(WindowConfiguration)
 			Visible = true,
 		})
 
-		TitleBarTextDrawing = CreateTextDrawing(WindowConfiguration.Title, Theme.TitleFontSize, Theme.TitleBarText, 5)
+		TitleBarTextDrawing = CreateTextDrawing(WindowConfiguration.Title, Theme.TitleFontSize, Theme.TitleBarText, 6)
+		TitleBarDescriptionDrawing = CreateTextDrawing(
+			Window._Description,
+			Theme.HeaderSecondaryFontSize,
+			Theme.TextBoxPlaceholder,
+			6
+		)
+		TitleBarMetaDrawing = CreateTextDrawing(
+			Window:GetHeaderMetaText(),
+			Theme.HeaderSecondaryFontSize,
+			Theme.LabelText,
+			6
+		)
+		TitleBarActionSeparatorDrawing = CreateTrackedDrawingObject("Line")
+		ApplyDrawingProperties(TitleBarActionSeparatorDrawing, {
+			Thickness = 1,
+			Transparency = 0.45,
+			Color = Theme.WindowBorder,
+			ZIndex = 6,
+			Visible = true,
+		})
 
 		CloseButtonBackgroundDrawing = CreateRectangleDrawing(Theme.CloseButtonBackground, true, 5, 0.9)
 		CloseButtonBorderDrawing = CreateRectangleDrawing(Theme.CloseButtonBorder, false, 6, 0.9)
@@ -3115,15 +3149,6 @@ function Library:CreateWindow(WindowConfiguration)
 			ApplyDrawingProperties(TouchLauncherTextDrawing, { Visible = false })
 		end
 
-		WindowBottomBorderDrawing = CreateTrackedDrawingObject("Line")
-		ApplyDrawingProperties(WindowBottomBorderDrawing, {
-			Thickness = 1,
-			Transparency = 0.35,
-			Color = Theme.TitleBarSeparator,
-			ZIndex = 4,
-			Visible = false,
-		})
-
 		WindowTopAccentDrawing = CreateTrackedDrawingObject("Line")
 		ApplyDrawingProperties(WindowTopAccentDrawing, {
 			Thickness = 1.5,
@@ -3132,6 +3157,8 @@ function Library:CreateWindow(WindowConfiguration)
 			ZIndex = 5,
 			Visible = true,
 		})
+
+		-- The lower edge stays intentionally clean; status text is not rendered.
 
 		Window._ResizeGripLines = {}
 		for ResizeGripLineIndex = 1, 3 do
@@ -3210,10 +3237,11 @@ function Library:CreateWindow(WindowConfiguration)
 
 		Window._DrawingObjects = {
 			WindowBodyBackgroundDrawing, WindowBodyTopSheenDrawing, WindowBodyBottomShadeDrawing, WindowBodyBorderDrawing,
-			TitleBarBackgroundDrawing, TitleBarHighlightDrawing, TitleBarAccentWashDrawing, TitleBarBorderDrawing, TitleBarTextDrawing,
+			TitleBarBackgroundDrawing, TitleBarHighlightDrawing, TitleBarAccentWashDrawing, TitleBarBorderDrawing,
+			TitleBarTextDrawing, TitleBarDescriptionDrawing, TitleBarMetaDrawing, TitleBarActionSeparatorDrawing,
 			TitleAccentCircleDrawing, TitleAccentOuterGlowCircleDrawing, TitleBarSeparatorDrawing,
 			CloseButtonBackgroundDrawing, CloseButtonBorderDrawing, CloseButtonTextDrawing,
-			WindowBottomBorderDrawing, WindowTopAccentDrawing,
+			WindowTopAccentDrawing,
 		}
 		for DiscardResizeGripLineIndex, ResizeGripLineObject in ipairs(Window._ResizeGripLines) do
 			table.insert(Window._DrawingObjects, ResizeGripLineObject)
@@ -3888,7 +3916,11 @@ function Library:CreateWindow(WindowConfiguration)
 		if not UseImmediateMode and #Window._Pages > 0 then
 			for DiscardSectionIndex, SectionObject in ipairs(Window._Sections) do
 				if SectionObject._PageIndex and SectionObject._PageIndex ~= Window._ActivePageIndex then
-					local VisibilityObjects = { SectionObject._FullBackground, SectionObject._Background, SectionObject._Border, SectionObject._TextLabel, SectionObject._AccentLine, SectionObject._LeftAccentLine }
+					local VisibilityObjects = {
+						SectionObject._FullBackground, SectionObject._Background, SectionObject._Border,
+						SectionObject._TextLabel, SectionObject._IndexTextLabel,
+						SectionObject._AccentLine, SectionObject._LeftAccentLine,
+					}
 					SetDrawingObjectsVisibility(VisibilityObjects, false)
 					for DiscardElementIndex, Element in ipairs(SectionObject._Elements) do
 						if Element._Type == "TextLabel" then
@@ -4783,11 +4815,35 @@ function Library:CreateWindow(WindowConfiguration)
 					local TitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionAbsolutePosition.Y + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					local IsTitleVisible = IsSectionVisible and (TitleY >= ViewportStart) and (TitleY + Theme.SectionFontSize <= ViewportEnd)
+					local SectionIndexText = string.format("%02d", Section._Index or 0)
+					local SectionIndexBounds = GetTextBounds(SectionIndexText, Theme.SectionMetaFontSize)
+					local AvailableTitleWidth = math.max(
+						1,
+						Section._Width - SectionIndexBounds.X - 34
+					)
+					local MaximumTitleCharacters = math.max(
+						1,
+						math.floor(AvailableTitleWidth / GetEditableTextCharacterWidth(Theme.SectionFontSize))
+					)
 					ApplyDrawingProperties(Section._TextLabel, {
+						Text = TruncateTextWithAsciiEllipsis(Section._Title, MaximumTitleCharacters),
 						Position = Vector2.new(SectionAbsolutePosition.X + 10, TitleY),
 						Color = TitleColor,
 						Visible = IsTitleVisible,
 					})
+
+					if Section._IndexTextLabel then
+						ApplyDrawingProperties(Section._IndexTextLabel, {
+							Text = SectionIndexText,
+							Size = Theme.SectionMetaFontSize,
+							Position = Vector2.new(
+								SectionAbsolutePosition.X + Section._Width - SectionIndexBounds.X - 10,
+								SectionAbsolutePosition.Y + (Theme.ElementHeight - Theme.SectionMetaFontSize) / 2
+							),
+							Color = Theme.TextBoxPlaceholder,
+							Visible = IsTitleVisible,
+						})
+					end
 				end
 			end
 
@@ -4939,12 +4995,6 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 			end
 
-			if WindowBottomBorderDrawing then
-				ApplyDrawingProperties(WindowBottomBorderDrawing, {
-					Visible = false
-				})
-			end
-
 			if WindowTopAccentDrawing then
 				ApplyDrawingProperties(WindowTopAccentDrawing, {
 					From = WindowPosition,
@@ -4955,6 +5005,7 @@ function Library:CreateWindow(WindowConfiguration)
 					Visible = Window._Visible
 				})
 			end
+
 
 
 			-- Responsive resizing must update the retained title rectangles as well as
@@ -4983,13 +5034,34 @@ function Library:CreateWindow(WindowConfiguration)
 				Color = Theme.WindowBorder,
 			})
 
+			local TitleTextPositionY = Window._Description ~= ""
+				and WindowPosition.Y + 7
+				or WindowPosition.Y + (Theme.TitleBarHeight - Theme.TitleFontSize) / 2
+
 			if TitleBarTextDrawing then
-				SetRenderProperty(TitleBarTextDrawing, "Size", Theme.TitleFontSize)
-				SetRenderProperty(TitleBarTextDrawing, "Position", Vector2.new(
-					WindowPosition.X + Theme.InnerMargin + 12,
-					WindowPosition.Y + (Theme.TitleBarHeight - Theme.TitleFontSize) / 2 + 2
-				))
-				SetRenderProperty(TitleBarTextDrawing, "Color", Window._TitleTextHovered and Theme.TitleBarTextHover or Theme.TitleBarText)
+				ApplyDrawingProperties(TitleBarTextDrawing, {
+					Text = Window._Title,
+					Size = Theme.TitleFontSize,
+					Position = Vector2.new(
+						WindowPosition.X + Theme.InnerMargin + 12,
+						TitleTextPositionY
+					),
+					Color = Window._TitleTextHovered and Theme.TitleBarTextHover or Theme.TitleBarText,
+					Visible = Window._Visible,
+				})
+			end
+
+			if TitleBarDescriptionDrawing then
+				ApplyDrawingProperties(TitleBarDescriptionDrawing, {
+					Text = Window._Description,
+					Size = Theme.HeaderSecondaryFontSize,
+					Position = Vector2.new(
+						WindowPosition.X + Theme.InnerMargin + 12,
+						WindowPosition.Y + Theme.TitleFontSize + 10
+					),
+					Color = Theme.TextBoxPlaceholder,
+					Visible = Window._Visible and Window._Description ~= "",
+				})
 			end
 
 			if TitleAccentCircleDrawing then
@@ -5054,6 +5126,40 @@ function Library:CreateWindow(WindowConfiguration)
 		}
 
 		if not UseImmediateMode then
+			local HeaderMetaText = Window:GetHeaderMetaText()
+			local HeaderMetaBounds = GetTextBounds(HeaderMetaText, Theme.HeaderSecondaryFontSize)
+			local HeaderActionSeparatorX = SearchButtonPosX - 10
+			local HeaderMetaPositionX = HeaderActionSeparatorX - HeaderMetaBounds.X - 10
+			local TitleBounds = GetTextBounds(Window._Title, Theme.TitleFontSize)
+			local DescriptionBounds = Window._Description ~= ""
+				and GetTextBounds(Window._Description, Theme.HeaderSecondaryFontSize)
+				or Vector2.new(0, 0)
+			local HeaderTextWidth = math.max(TitleBounds.X, DescriptionBounds.X)
+			local TitleSafeRightX = WindowPosition.X + Theme.InnerMargin + 12 + HeaderTextWidth + 20
+			local HeaderMetaVisible = Window._Visible and HeaderMetaPositionX > TitleSafeRightX
+
+			if TitleBarMetaDrawing then
+				ApplyDrawingProperties(TitleBarMetaDrawing, {
+					Text = HeaderMetaText,
+					Size = Theme.HeaderSecondaryFontSize,
+					Position = Vector2.new(
+						HeaderMetaPositionX,
+						WindowPosition.Y + (Theme.TitleBarHeight - Theme.HeaderSecondaryFontSize) / 2
+					),
+					Color = Theme.LabelText,
+					Visible = HeaderMetaVisible,
+				})
+			end
+
+			if TitleBarActionSeparatorDrawing then
+				ApplyDrawingProperties(TitleBarActionSeparatorDrawing, {
+					From = Vector2.new(HeaderActionSeparatorX, WindowPosition.Y + 10),
+					To = Vector2.new(HeaderActionSeparatorX, WindowPosition.Y + Theme.TitleBarHeight - 10),
+					Color = Theme.WindowBorder,
+					Visible = HeaderMetaVisible,
+				})
+			end
+
 			if Window._SearchIconCircle and Window._SearchIconLine then
 				local SearchButtonCenterOffset = Window._SearchButtonRegion.Size / 2
 				local CenterPoint = Window._SearchButtonRegion.Position + SearchButtonCenterOffset
@@ -5305,6 +5411,7 @@ function Library:CreateWindow(WindowConfiguration)
 					Section._Background,
 					Section._Border,
 					Section._TextLabel,
+					Section._IndexTextLabel,
 					Section._AccentLine,
 					Section._LeftAccentLine,
 					Section._ScrollbarTrack,
@@ -5736,6 +5843,9 @@ function Library:CreateWindow(WindowConfiguration)
 			PageIndex = 1
 		end
 
+		Section._Index = PageIndex
+			and (#Window._Pages[PageIndex].Sections + 1)
+			or (#Window._Sections + 1)
 		if PageIndex then
 			Section._PageIndex = PageIndex
 			table.insert(Window._Pages[PageIndex].Sections, Section)
@@ -5746,6 +5856,12 @@ function Library:CreateWindow(WindowConfiguration)
 			Section._Background = CreateRectangleDrawing(Theme.SectionBackground, true, 5, 0.95)
 			Section._Border = CreateRectangleDrawing(Theme.WindowBorder, false, 6, 0.6)
 			Section._TextLabel = CreateTextDrawing(SectionConfiguration.Title, Theme.SectionFontSize, Theme.SectionText, 7)
+			Section._IndexTextLabel = CreateTextDrawing(
+				string.format("%02d", Section._Index),
+				Theme.SectionMetaFontSize,
+				Theme.TextBoxPlaceholder,
+				7
+			)
 			Section._AccentLine = CreateTrackedDrawingObject("Line")
 			ApplyDrawingProperties(Section._AccentLine, {
 				Thickness = 1,
@@ -8382,6 +8498,8 @@ function Library:CreateWindow(WindowConfiguration)
 			DrawingImmediateFilledRectangle(BodyPosition + Vector2.new(0, math.max(0, ContentHeight - 72)), Vector2.new(WindowWidth, math.min(72, ContentHeight)), Theme.WindowSurfaceShade, 0.22, 0)
 			DrawingImmediateRectangle(BodyPosition, BodySize, Theme.WindowBorder, 0.8, 0, 1)
 
+
+
 			DrawingImmediateLine(
 				WindowPosition,
 				Vector2.new(WindowPosition.X + WindowWidth, WindowPosition.Y),
@@ -8512,17 +8630,60 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 			end
 
-			local TitleTextX   = WindowPosition.X + Theme.InnerMargin + 12
-			local TitleTextY   = WindowPosition.Y + (Theme.TitleBarHeight - Theme.TitleFontSize) / 2 + 2
-			local TitleTextColor   = Theme.TitleBarText:Lerp(Theme.TitleBarTextHover, Window._TitleTextHoverFactor or 0)
+			local TitleTextX = WindowPosition.X + Theme.InnerMargin + 12
+			local TitleTextY = Window._Description ~= ""
+				and WindowPosition.Y + 7
+				or WindowPosition.Y + (Theme.TitleBarHeight - Theme.TitleFontSize) / 2
+			local TitleTextColor = Theme.TitleBarText:Lerp(
+				Theme.TitleBarTextHover,
+				Window._TitleTextHoverFactor or 0
+			)
 
-			local TitleDotCenter = Vector2.new(WindowPosition.X + Theme.InnerMargin + 4, WindowPosition.Y + Theme.TitleBarHeight / 2)
+			local TitleDotCenter = Vector2.new(
+				WindowPosition.X + Theme.InnerMargin + 4,
+				WindowPosition.Y + Theme.TitleBarHeight / 2
+			)
 			DrawingImmediateCircle(TitleDotCenter, 5, Theme.TitleBarSeparator, 0.4, 48, 1)
 			DrawImmediateSolidCircle(TitleDotCenter, 2.5, Theme.TitleBarSeparator, 1, 48)
 			DrawingImmediateText(
 				Vector2.new(TitleTextX, TitleTextY),
 				Theme.Font, Theme.TitleFontSize, TitleTextColor, 1, Window._Title, false
 			)
+			if Window._Description ~= "" then
+				DrawingImmediateText(
+					Vector2.new(TitleTextX, WindowPosition.Y + Theme.TitleFontSize + 10),
+					Theme.Font, Theme.HeaderSecondaryFontSize, Theme.TextBoxPlaceholder, 1, Window._Description, false
+				)
+			end
+
+			if Window._SearchButtonRegion then
+				local HeaderMetaText = Window:GetHeaderMetaText()
+				local HeaderMetaBounds = GetTextBounds(HeaderMetaText, Theme.HeaderSecondaryFontSize)
+				local HeaderActionSeparatorX = Window._SearchButtonRegion.Position.X - 10
+				local HeaderMetaPositionX = HeaderActionSeparatorX - HeaderMetaBounds.X - 10
+				local TitleBounds = GetTextBounds(Window._Title, Theme.TitleFontSize)
+				local DescriptionBounds = Window._Description ~= ""
+					and GetTextBounds(Window._Description, Theme.HeaderSecondaryFontSize)
+					or Vector2.new(0, 0)
+				local HeaderTextWidth = math.max(TitleBounds.X, DescriptionBounds.X)
+				local TitleSafeRightX = TitleTextX + HeaderTextWidth + 20
+				if HeaderMetaPositionX > TitleSafeRightX then
+					DrawingImmediateText(
+						Vector2.new(
+							HeaderMetaPositionX,
+							WindowPosition.Y + (Theme.TitleBarHeight - Theme.HeaderSecondaryFontSize) / 2
+						),
+						Theme.Font, Theme.HeaderSecondaryFontSize, Theme.LabelText, 1, HeaderMetaText, false
+					)
+					DrawingImmediateLine(
+						Vector2.new(HeaderActionSeparatorX, WindowPosition.Y + 10),
+						Vector2.new(HeaderActionSeparatorX, WindowPosition.Y + Theme.TitleBarHeight - 10),
+						Theme.WindowBorder,
+						0.45,
+						1
+					)
+				end
+			end
 
 			if Window._CloseButtonRegion then
 				local CloseRegion = Window._CloseButtonRegion
@@ -8591,9 +8752,26 @@ function Library:CreateWindow(WindowConfiguration)
 					local SectionTitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionYPosition + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					if TitleY >= ViewportStart and TitleY + Theme.SectionFontSize <= ViewportEnd then
+						local SectionIndexText = string.format("%02d", Section._Index or 0)
+						local SectionIndexBounds = GetTextBounds(SectionIndexText, Theme.SectionMetaFontSize)
+						local AvailableTitleWidth = math.max(1, Section._Width - SectionIndexBounds.X - 34)
+						local MaximumTitleCharacters = math.max(
+							1,
+							math.floor(AvailableTitleWidth / GetEditableTextCharacterWidth(Theme.SectionFontSize))
+						)
 						DrawingImmediateText(
 							Vector2.new(WindowPosition.X + Section._PositionX + 10, TitleY),
-							Theme.Font, Theme.SectionFontSize, SectionTitleColor, 1, Section._Title, false
+							Theme.Font, Theme.SectionFontSize, SectionTitleColor, 1,
+							TruncateTextWithAsciiEllipsis(Section._Title, MaximumTitleCharacters),
+							false
+						)
+
+						DrawingImmediateText(
+							Vector2.new(
+								WindowPosition.X + Section._PositionX + Section._Width - SectionIndexBounds.X - 10,
+								SectionYPosition + (Theme.ElementHeight - Theme.SectionMetaFontSize) / 2
+							),
+							Theme.Font, Theme.SectionMetaFontSize, Theme.TextBoxPlaceholder, 1, SectionIndexText, false
 						)
 					end
 

@@ -798,6 +798,82 @@ ClampDropdownScrollOffset = function(Element)
 	return Element._OptionsScrollOffset
 end
 
+local function CopySequentialValues(SourceValues)
+	local CopiedValues = {}
+	for ValueIndex, Value in ipairs(SourceValues or {}) do
+		CopiedValues[ValueIndex] = Value
+	end
+	return CopiedValues
+end
+
+local function DropdownContainsValue(Element, TargetValue)
+	if not Element or not Element._MultiSelect then
+		return Element and Element._Value == TargetValue or false
+	end
+
+	for _, SelectedValue in ipairs(Element._Value or {}) do
+		if SelectedValue == TargetValue then
+			return true
+		end
+	end
+	return false
+end
+
+local function NormalizeDropdownValues(Options, RequestedValues)
+	local RequestedLookup = {}
+	if typeof(RequestedValues) == "table" then
+		for _, RequestedValue in ipairs(RequestedValues) do
+			RequestedLookup[RequestedValue] = true
+		end
+	elseif RequestedValues ~= nil and RequestedValues ~= "" then
+		RequestedLookup[RequestedValues] = true
+	end
+
+	local NormalizedValues = {}
+	for _, OptionValue in ipairs(Options or {}) do
+		if RequestedLookup[OptionValue] then
+			table.insert(NormalizedValues, OptionValue)
+		end
+	end
+	return NormalizedValues
+end
+
+local function AreSequentialValuesEqual(LeftValues, RightValues)
+	LeftValues = LeftValues or {}
+	RightValues = RightValues or {}
+	if #LeftValues ~= #RightValues then
+		return false
+	end
+	for ValueIndex = 1, #LeftValues do
+		if LeftValues[ValueIndex] ~= RightValues[ValueIndex] then
+			return false
+		end
+	end
+	return true
+end
+
+local function GetDropdownDisplayValue(Element)
+	if not Element then
+		return ""
+	end
+	if not Element._MultiSelect then
+		return tostring(Element._Value or "")
+	end
+
+	local SelectedValues = Element._Value or {}
+	if #SelectedValues == 0 then
+		return Element._EmptySelectionText or "None"
+	end
+	return table.concat(SelectedValues, Element._SelectionSeparator or ", ")
+end
+
+local function GetDropdownItemDisplayValue(Element, ItemValue)
+	if not Element or not Element._MultiSelect then
+		return tostring(ItemValue)
+	end
+	return string.format("[%s] %s", DropdownContainsValue(Element, ItemValue) and "x" or " ", tostring(ItemValue))
+end
+
 ClampTextBoxCursorIndex = function(Element, CursorIndex)
 	-- Cursor indices live between characters, so the valid range is
 	-- one through string length plus one.
@@ -4407,7 +4483,7 @@ function Library:CreateWindow(WindowConfiguration)
 							local AvailableTextWidth = ElementAbsoluteSize.X - 32
 							local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 							local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
-							local FullText = string.format("%s: %s", Element._Text, Element._Value)
+							local FullText = string.format("%s: %s", Element._Text, GetDropdownDisplayValue(Element))
 							local DisplayText = TruncateTextWithAsciiEllipsis(FullText, MaximumCharacters)
 							ApplyDrawingProperties(Element._TextDrawing, {
 								Text = DisplayText,
@@ -4472,7 +4548,7 @@ function Library:CreateWindow(WindowConfiguration)
 									local AvailableItemTextWidth = ElementAbsoluteSize.X - 24
 									local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 									local MaximumCharacters = math.max(1, math.floor(AvailableItemTextWidth / CharacterWidth))
-									local DisplayItemText = TruncateTextWithAsciiEllipsis(ItemData.Value, MaximumCharacters)
+									local DisplayItemText = TruncateTextWithAsciiEllipsis(GetDropdownItemDisplayValue(Element, ItemData.Value), MaximumCharacters)
 									ApplyDrawingProperties(ItemData.TextDrawing, {
 										Text = DisplayItemText,
 										Position = ItemAbsolutePosition + Vector2.new(12, (Theme.ElementHeight - Theme.ElementFontSize) / 2),
@@ -6299,7 +6375,12 @@ function Library:CreateWindow(WindowConfiguration)
 			DropdownConfiguration = DropdownConfiguration or {}
 			DropdownConfiguration.Text = DropdownConfiguration.Text or "Select"
 			DropdownConfiguration.Options = DropdownConfiguration.Options or {}
-			DropdownConfiguration.Default = DropdownConfiguration.Default or (DropdownConfiguration.Options[1] or "")
+			DropdownConfiguration.MultiSelect = DropdownConfiguration.MultiSelect == true
+			if DropdownConfiguration.Default == nil then
+				DropdownConfiguration.Default = DropdownConfiguration.MultiSelect
+					and {}
+					or (DropdownConfiguration.Options[1] or "")
+			end
 			DropdownConfiguration.Callback = DropdownConfiguration.Callback or function() end
 
 			local Element = {}
@@ -6308,7 +6389,12 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._Height = Theme.ElementHeight
 			Element._Text = DropdownConfiguration.Text
 			Element._Options = DropdownConfiguration.Options
-			Element._Value = DropdownConfiguration.Default
+			Element._MultiSelect = DropdownConfiguration.MultiSelect
+			Element._EmptySelectionText = tostring(DropdownConfiguration.EmptySelectionText or "None")
+			Element._SelectionSeparator = tostring(DropdownConfiguration.SelectionSeparator or ", ")
+			Element._Value = Element._MultiSelect
+				and NormalizeDropdownValues(Element._Options, DropdownConfiguration.Default)
+				or DropdownConfiguration.Default
 			Element._Callback = DropdownConfiguration.Callback
 			Element._Expanded = false
 			Element._IsHovered = false
@@ -6325,7 +6411,7 @@ function Library:CreateWindow(WindowConfiguration)
 			if not UseImmediateMode and DrawingBackendAvailable then
 				Element._BackgroundDrawing = CreateRectangleDrawing(Theme.DropdownBackground, true, 10, 0.95)
 				Element._BorderDrawing = CreateRectangleDrawing(Theme.DropdownBorder, false, 11, 0.7)
-				Element._TextDrawing = CreateTextDrawing(string.format("%s: %s", DropdownConfiguration.Text, DropdownConfiguration.Default), Theme.ElementFontSize, Theme.DropdownText, 12)
+				Element._TextDrawing = CreateTextDrawing(string.format("%s: %s", DropdownConfiguration.Text, GetDropdownDisplayValue(Element)), Theme.ElementFontSize, Theme.DropdownText, 12)
 				Element._ArrowDrawing = CreateTextDrawing("v", Theme.ElementFontSize, Theme.DropdownArrow, 12)
 				Element._AccentLineDrawing = CreateTrackedDrawingObject("Line")
 				ApplyDrawingProperties(Element._AccentLineDrawing, {
@@ -6349,7 +6435,7 @@ function Library:CreateWindow(WindowConfiguration)
 					local ItemBackground = CreateRectangleDrawing(Theme.DropdownItemBackground, true, 20, 0.95)
 					ApplyDrawingProperties(ItemBackground, { Visible = false })
 
-					local ItemText = CreateTextDrawing(OptionText, Theme.ElementFontSize, Theme.DropdownText, 21)
+					local ItemText = CreateTextDrawing(GetDropdownItemDisplayValue(Element, OptionText), Theme.ElementFontSize, Theme.DropdownText, 21)
 					ApplyDrawingProperties(ItemText, { Visible = false })
 
 					local ItemSeparator = CreateTrackedDrawingObject("Line")
@@ -6401,26 +6487,69 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			function Element:SetValue(NewValue, SuppressCallback, ForceCallback)
-				local ValueChanged = Element._Value ~= NewValue
-				Element._Value = NewValue
+				local ValueChanged
+				if Element._MultiSelect then
+					local NormalizedValues = NormalizeDropdownValues(Element._Options, NewValue)
+					ValueChanged = not AreSequentialValuesEqual(Element._Value, NormalizedValues)
+					Element._Value = NormalizedValues
+				else
+					ValueChanged = Element._Value ~= NewValue
+					Element._Value = NewValue
+				end
+
 				if Element._TextDrawing then
-					SetRenderProperty(Element._TextDrawing, "Text", string.format("%s: %s", DropdownConfiguration.Text, NewValue))
+					SetRenderProperty(
+						Element._TextDrawing,
+						"Text",
+						string.format("%s: %s", DropdownConfiguration.Text, GetDropdownDisplayValue(Element))
+					)
 				end
 				if (ValueChanged or ForceCallback) and not SuppressCallback then
-					InvokeCallback(Element._Callback, NewValue)
+					InvokeCallback(
+						Element._Callback,
+						Element._MultiSelect and CopySequentialValues(Element._Value) or Element._Value
+					)
 				end
 			end
 
 			function Element:GetValue()
-				return Element._Value
+				return Element._MultiSelect and CopySequentialValues(Element._Value) or Element._Value
+			end
+
+			function Element:GetValues()
+				if Element._MultiSelect then
+					return CopySequentialValues(Element._Value)
+				end
+				return { Element._Value }
+			end
+
+			function Element:IsSelected(OptionValue)
+				return DropdownContainsValue(Element, OptionValue)
+			end
+
+			function Element:ToggleValue(OptionValue, SuppressCallback)
+				if not Element._MultiSelect then
+					Element:SetValue(OptionValue, SuppressCallback)
+					return
+				end
+
+				local UpdatedValues = CopySequentialValues(Element._Value)
+				local ExistingIndex
+				for ValueIndex, SelectedValue in ipairs(UpdatedValues) do
+					if SelectedValue == OptionValue then
+						ExistingIndex = ValueIndex
+						break
+					end
+				end
+				if ExistingIndex then
+					table.remove(UpdatedValues, ExistingIndex)
+				else
+					table.insert(UpdatedValues, OptionValue)
+				end
+				Element:SetValue(UpdatedValues, SuppressCallback)
 			end
 
 			function Element:SetOptions(NewOptions, NewDefault, ForceCallback, SuppressCallback)
-				-- Dynamic data such as marketplace products and class folders can
-				-- arrive after the dropdown is created. Rebuilding the item model
-				-- keeps async sections from needing to recreate the whole control.
-				-- Programmatic refreshes may suppress their callback when the caller
-				-- applies the matching state itself immediately after this method.
 				if Element._Expanded then
 					Element:Toggle()
 				end
@@ -6433,7 +6562,9 @@ function Library:CreateWindow(WindowConfiguration)
 					DestroyDrawing(ItemData.SeparatorDrawing, WindowTrackedDrawings)
 				end
 
-				local PreviousValue = Element._Value
+				local PreviousValue = Element._MultiSelect
+					and CopySequentialValues(Element._Value)
+					or Element._Value
 				local NormalizedOptions = {}
 				for OptionIndex, OptionValue in ipairs(NewOptions or {}) do
 					NormalizedOptions[OptionIndex] = OptionValue
@@ -6441,22 +6572,27 @@ function Library:CreateWindow(WindowConfiguration)
 				Element._Options = NormalizedOptions
 				Element._ItemDrawingObjects = {}
 
-				local PreviousValueStillExists = false
-				local RequestedDefaultExists = false
-				for OptionIndex, OptionValue in ipairs(Element._Options) do
-					if OptionValue == PreviousValue then
-						PreviousValueStillExists = true
-					end
-					if NewDefault ~= nil and OptionValue == NewDefault then
-						RequestedDefaultExists = true
-					end
-				end
-				if RequestedDefaultExists then
-					Element._Value = NewDefault
-				elseif PreviousValueStillExists then
-					Element._Value = PreviousValue
+				if Element._MultiSelect then
+					local RequestedValues = NewDefault ~= nil and NewDefault or PreviousValue
+					Element._Value = NormalizeDropdownValues(Element._Options, RequestedValues)
 				else
-					Element._Value = Element._Options[1] or ""
+					local PreviousValueStillExists = false
+					local RequestedDefaultExists = false
+					for OptionIndex, OptionValue in ipairs(Element._Options) do
+						if OptionValue == PreviousValue then
+							PreviousValueStillExists = true
+						end
+						if NewDefault ~= nil and OptionValue == NewDefault then
+							RequestedDefaultExists = true
+						end
+					end
+					if RequestedDefaultExists then
+						Element._Value = NewDefault
+					elseif PreviousValueStillExists then
+						Element._Value = PreviousValue
+					else
+						Element._Value = Element._Options[1] or ""
+					end
 				end
 
 				for OptionIndex, OptionText in ipairs(Element._Options) do
@@ -6471,7 +6607,12 @@ function Library:CreateWindow(WindowConfiguration)
 						local ItemBackground = CreateRectangleDrawing(Theme.DropdownItemBackground, true, 20, 0.95)
 						ApplyDrawingProperties(ItemBackground, { Visible = false })
 
-						local ItemText = CreateTextDrawing(OptionText, Theme.ElementFontSize, Theme.DropdownText, 21)
+						local ItemText = CreateTextDrawing(
+							GetDropdownItemDisplayValue(Element, OptionText),
+							Theme.ElementFontSize,
+							Theme.DropdownText,
+							21
+						)
 						ApplyDrawingProperties(ItemText, { Visible = false })
 
 						local ItemSeparator = CreateTrackedDrawingObject("Line")
@@ -6492,11 +6633,24 @@ function Library:CreateWindow(WindowConfiguration)
 				end
 
 				if Element._TextDrawing then
-					SetRenderProperty(Element._TextDrawing, "Text", string.format("%s: %s", DropdownConfiguration.Text, Element._Value))
+					SetRenderProperty(
+						Element._TextDrawing,
+						"Text",
+						string.format("%s: %s", DropdownConfiguration.Text, GetDropdownDisplayValue(Element))
+					)
 				end
 
-				if (Element._Value ~= PreviousValue or ForceCallback) and not SuppressCallback then
-					InvokeCallback(Element._Callback, Element._Value)
+				local ValueChanged
+				if Element._MultiSelect then
+					ValueChanged = not AreSequentialValuesEqual(Element._Value, PreviousValue)
+				else
+					ValueChanged = Element._Value ~= PreviousValue
+				end
+				if (ValueChanged or ForceCallback) and not SuppressCallback then
+					InvokeCallback(
+						Element._Callback,
+						Element._MultiSelect and CopySequentialValues(Element._Value) or Element._Value
+					)
 				end
 				Window:RecalculateLayout()
 			end
@@ -8300,8 +8454,12 @@ function Library:CreateWindow(WindowConfiguration)
 					if IsInsideOptionsRegion
 						and IsInsideSectionViewport
 						and IsPointInsideRectangle(CurrentMousePosition, ItemRegionPosition, ItemRegionSize) then
-						ExpandedDropdown:SetValue(ItemData.Value)
-						ExpandedDropdown:Toggle()
+						if ExpandedDropdown._MultiSelect then
+							ExpandedDropdown:ToggleValue(ItemData.Value)
+						else
+							ExpandedDropdown:SetValue(ItemData.Value)
+							ExpandedDropdown:Toggle()
+						end
 						return
 					end
 				end
@@ -9082,7 +9240,7 @@ function Library:CreateWindow(WindowConfiguration)
 								local AvailableTextWidth = ElementSize.X - 32
 								local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 								local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
-								local FullText = string.format("%s: %s", Element._Text, Element._Value)
+								local FullText = string.format("%s: %s", Element._Text, GetDropdownDisplayValue(Element))
 								local DisplayText = TruncateTextWithAsciiEllipsis(FullText, MaximumCharacters)
 								DrawingImmediateText(
 									Vector2.new(WindowPosition.X + Element._PositionX + 8, TextY),
@@ -9129,7 +9287,7 @@ function Library:CreateWindow(WindowConfiguration)
 											local AvailableItemTextWidth = ItemSize.X - 24
 											local CharacterWidth = GetEditableTextCharacterWidth(Theme.ElementFontSize)
 											local MaximumCharacters = math.max(1, math.floor(AvailableItemTextWidth / CharacterWidth))
-											local DisplayItemText = TruncateTextWithAsciiEllipsis(ItemData.Value, MaximumCharacters)
+											local DisplayItemText = TruncateTextWithAsciiEllipsis(GetDropdownItemDisplayValue(Element, ItemData.Value), MaximumCharacters)
 											DrawingImmediateText(
 												Vector2.new(WindowPosition.X + ItemData._PositionX + 12, ItemTextY),
 												Theme.Font, Theme.ElementFontSize, IsHovered and Theme.TitleBarText or Theme.DropdownText, 1, DisplayItemText, false

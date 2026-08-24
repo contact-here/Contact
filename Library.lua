@@ -208,6 +208,7 @@ if not DrawingIsNative then
 end
 local DrawingImmediateLine, DrawingImmediateCircle, DrawingImmediateFilledCircle,
 	DrawingImmediateRectangle, DrawingImmediateFilledRectangle,
+	DrawingImmediateTriangle, DrawingImmediateFilledTriangle,
 	DrawingImmediateQuad, DrawingImmediateFilledQuad, DrawingImmediateText,
 	DrawingImmediateOutlinedText, DrawingImmediateGetPaint
 
@@ -217,6 +218,7 @@ local DrawingImmediateLine, DrawingImmediateCircle, DrawingImmediateFilledCircle
 if typeof(DrawingImmediate) == "table" then
 	DrawingImmediateLine, DrawingImmediateCircle, DrawingImmediateFilledCircle,
 		DrawingImmediateRectangle, DrawingImmediateFilledRectangle,
+		DrawingImmediateTriangle, DrawingImmediateFilledTriangle,
 		DrawingImmediateQuad, DrawingImmediateFilledQuad, DrawingImmediateText,
 		DrawingImmediateOutlinedText, DrawingImmediateGetPaint =
 		typeof(DrawingImmediate.Line) == "function" and CloneFunction(DrawingImmediate.Line),
@@ -224,6 +226,8 @@ if typeof(DrawingImmediate) == "table" then
 		typeof(DrawingImmediate.FilledCircle) == "function" and CloneFunction(DrawingImmediate.FilledCircle),
 		typeof(DrawingImmediate.Rectangle) == "function" and CloneFunction(DrawingImmediate.Rectangle),
 		typeof(DrawingImmediate.FilledRectangle) == "function" and CloneFunction(DrawingImmediate.FilledRectangle),
+		typeof(DrawingImmediate.Triangle) == "function" and CloneFunction(DrawingImmediate.Triangle),
+		typeof(DrawingImmediate.FilledTriangle) == "function" and CloneFunction(DrawingImmediate.FilledTriangle),
 		typeof(DrawingImmediate.Quad) == "function" and CloneFunction(DrawingImmediate.Quad),
 		typeof(DrawingImmediate.FilledQuad) == "function" and CloneFunction(DrawingImmediate.FilledQuad),
 		typeof(DrawingImmediate.Text) == "function" and CloneFunction(DrawingImmediate.Text),
@@ -403,108 +407,110 @@ end
 -- can expose them through the theme editor without touching rendering logic.
 Theme = {
 
-	-- The commercial theme is built from neutral graphite surfaces, a restrained
-	-- mint accent, cool blue selection feedback, and warm destructive actions.
-	-- This gives every state a distinct purpose without turning the complete
-	-- interface into a single-hue terminal panel.
-	WindowBackground       = Color3.fromRGB(12, 16, 21),
-	WindowSurfaceHighlight = Color3.fromRGB(24, 31, 39),
-	WindowSurfaceShade     = Color3.fromRGB(7, 10, 14),
-	WindowBorder           = Color3.fromRGB(56, 70, 82),
-	WindowBorderHover      = Color3.fromRGB(104, 157, 178),
+	-- contactinghere.lol uses an almost-black canvas, translucent white surfaces,
+	-- bright type, and small cyan/red signals. These tokens mirror that visual
+	-- hierarchy while keeping every state readable in a Drawing-only renderer.
+	AccentPrimary          = Color3.fromRGB(56, 189, 248),
+	AccentSecondary        = Color3.fromRGB(248, 113, 113),
+	AccentNeutral          = Color3.fromRGB(228, 228, 231),
+	WindowBackground       = Color3.fromRGB(3, 3, 5),
+	WindowSurfaceHighlight = Color3.fromRGB(18, 18, 26),
+	WindowSurfaceShade     = Color3.fromRGB(0, 0, 0),
+	WindowBorder           = Color3.fromRGB(39, 39, 42),
+	WindowBorderHover      = Color3.fromRGB(161, 161, 170),
 
 	-- The title bar gets a cooler tint than the body to make dragging and
 	-- window ownership visually obvious.
-	TitleBarBackground     = Color3.fromRGB(16, 22, 29),
-	TitleBarBackgroundHover= Color3.fromRGB(23, 32, 40),
-	TitleBarHighlight      = Color3.fromRGB(38, 50, 61),
-	TitleBarAccentWash     = Color3.fromRGB(21, 52, 54),
-	TitleBarSeparator      = Color3.fromRGB(89, 211, 184),
-	TitleBarText           = Color3.fromRGB(242, 247, 246),
+	TitleBarBackground     = Color3.fromRGB(7, 7, 10),
+	TitleBarBackgroundHover= Color3.fromRGB(12, 12, 18),
+	TitleBarHighlight      = Color3.fromRGB(23, 23, 25),
+	TitleBarAccentWash     = Color3.fromRGB(12, 12, 18),
+	TitleBarSeparator      = Color3.fromRGB(228, 228, 231),
+	TitleBarText           = Color3.fromRGB(255, 255, 255),
 	TitleBarTextHover      = Color3.fromRGB(255, 255, 255),
 
 	-- Sections are slightly warmer than the window background, giving stacked
 	-- groups enough depth without relying on heavy borders.
-	SectionBodyBackground  = Color3.fromRGB(15, 19, 24),
-	SectionBackground      = Color3.fromRGB(22, 28, 35),
-	SectionBackgroundHover = Color3.fromRGB(31, 40, 49),
-	SectionText            = Color3.fromRGB(215, 229, 230),
-	SectionTextHover       = Color3.fromRGB(247, 251, 250),
+	SectionBodyBackground  = Color3.fromRGB(7, 7, 10),
+	SectionBackground      = Color3.fromRGB(12, 12, 18),
+	SectionBackgroundHover = Color3.fromRGB(18, 18, 26),
+	SectionText            = Color3.fromRGB(161, 161, 170),
+	SectionTextHover       = Color3.fromRGB(255, 255, 255),
 
-	LabelText      = Color3.fromRGB(204, 214, 219),
-	LabelTextHover = Color3.fromRGB(241, 247, 245),
+	LabelText      = Color3.fromRGB(161, 161, 170),
+	LabelTextHover = Color3.fromRGB(255, 255, 255),
 
-	ButtonBackground      = Color3.fromRGB(25, 33, 41),
-	ButtonBackgroundHover = Color3.fromRGB(37, 49, 60),
-	ButtonText            = Color3.fromRGB(236, 242, 239),
-	ButtonBorder          = Color3.fromRGB(66, 82, 94),
-	TabBackground         = Color3.fromRGB(19, 25, 32),
-	TabBackgroundHover    = Color3.fromRGB(29, 39, 48),
-	TabBackgroundActive   = Color3.fromRGB(31, 57, 58),
-	ToggleInactive        = Color3.fromRGB(67, 73, 79),
-	ToggleActive          = Color3.fromRGB(90, 215, 157),
+	ButtonBackground      = Color3.fromRGB(12, 12, 18),
+	ButtonBackgroundHover = Color3.fromRGB(23, 23, 25),
+	ButtonText            = Color3.fromRGB(255, 255, 255),
+	ButtonBorder          = Color3.fromRGB(39, 39, 42),
+	TabBackground         = Color3.fromRGB(7, 7, 10),
+	TabBackgroundHover    = Color3.fromRGB(18, 18, 26),
+	TabBackgroundActive   = Color3.fromRGB(23, 23, 25),
+	ToggleInactive        = Color3.fromRGB(63, 63, 70),
+	ToggleActive          = Color3.fromRGB(56, 189, 248),
 
-	TextBoxBackground      = Color3.fromRGB(16, 21, 27),
-	TextBoxBackgroundHover = Color3.fromRGB(24, 32, 40),
-	TextBoxBorder          = Color3.fromRGB(55, 70, 78),
-	TextBoxBorderFocused   = Color3.fromRGB(89, 211, 184),
-	TextBoxText            = Color3.fromRGB(226, 234, 232),
-	TextBoxPlaceholder     = Color3.fromRGB(116, 128, 132),
-	TextBoxCursor          = Color3.fromRGB(143, 224, 207),
-	TextBoxSelection       = Color3.fromRGB(65, 116, 171),
+	TextBoxBackground      = Color3.fromRGB(7, 7, 10),
+	TextBoxBackgroundHover = Color3.fromRGB(12, 12, 18),
+	TextBoxBorder          = Color3.fromRGB(39, 39, 42),
+	TextBoxBorderFocused   = Color3.fromRGB(56, 189, 248),
+	TextBoxText            = Color3.fromRGB(255, 255, 255),
+	TextBoxPlaceholder     = Color3.fromRGB(113, 113, 122),
+	TextBoxCursor          = Color3.fromRGB(255, 255, 255),
+	TextBoxSelection       = Color3.fromRGB(56, 189, 248),
 
-	DropdownBackground    = Color3.fromRGB(16, 22, 27),
-	DropdownHover         = Color3.fromRGB(25, 35, 42),
-	DropdownItemBackground= Color3.fromRGB(13, 18, 23),
-	DropdownItemHover     = Color3.fromRGB(35, 54, 60),
-	DropdownText          = Color3.fromRGB(221, 231, 229),
-	DropdownBorder        = Color3.fromRGB(57, 73, 82),
-	DropdownBorderHover   = Color3.fromRGB(98, 211, 190),
-	DropdownArrow         = Color3.fromRGB(154, 180, 181),
+	DropdownBackground    = Color3.fromRGB(7, 7, 10),
+	DropdownHover         = Color3.fromRGB(12, 12, 18),
+	DropdownItemBackground= Color3.fromRGB(3, 3, 5),
+	DropdownItemHover     = Color3.fromRGB(18, 18, 26),
+	DropdownText          = Color3.fromRGB(228, 228, 231),
+	DropdownBorder        = Color3.fromRGB(39, 39, 42),
+	DropdownBorderHover   = Color3.fromRGB(161, 161, 170),
+	DropdownArrow         = Color3.fromRGB(161, 161, 170),
 
-	SliderTrackBackground = Color3.fromRGB(18, 24, 29),
-	SliderTrackFill       = Color3.fromRGB(89, 211, 184),
-	SliderTrackFillHover  = Color3.fromRGB(136, 236, 214),
-	SliderText            = Color3.fromRGB(221, 231, 229),
-	SliderBorder          = Color3.fromRGB(55, 72, 80),
+	SliderTrackBackground = Color3.fromRGB(7, 7, 10),
+	SliderTrackFill       = Color3.fromRGB(56, 189, 248),
+	SliderTrackFillHover  = Color3.fromRGB(125, 211, 252),
+	SliderText            = Color3.fromRGB(228, 228, 231),
+	SliderBorder          = Color3.fromRGB(39, 39, 42),
 	SliderTrackHeight       = 8,
 	SliderTrackHoverHeight  = 10,
 	SliderThumbRadius       = 7,
 	SliderThumbHoverRadius  = 9,
 	ToggleIndicatorRadius   = 5,
 
-	ColorPickerBorder      = Color3.fromRGB(55, 72, 80),
-	ColorPickerSelectedBorder = Color3.fromRGB(98, 211, 190),
-	ColorPickerSwatchHover = Color3.fromRGB(214, 245, 236),
+	ColorPickerBorder      = Color3.fromRGB(39, 39, 42),
+	ColorPickerSelectedBorder = Color3.fromRGB(255, 255, 255),
+	ColorPickerSwatchHover = Color3.fromRGB(161, 161, 170),
 
-	ScrollbarBackground  = Color3.fromRGB(15, 20, 24),
-	ScrollbarHandle      = Color3.fromRGB(75, 98, 105),
-	ScrollbarHandleHover = Color3.fromRGB(115, 156, 164),
+	ScrollbarBackground  = Color3.fromRGB(7, 7, 10),
+	ScrollbarHandle      = Color3.fromRGB(39, 39, 42),
+	ScrollbarHandleHover = Color3.fromRGB(82, 82, 91),
 
-	NotificationBackground = Color3.fromRGB(12, 17, 21),
-	NotificationBorder     = Color3.fromRGB(73, 112, 119),
-	NotificationText       = Color3.fromRGB(237, 245, 242),
-	NotificationAccent     = Color3.fromRGB(89, 211, 184),
-	TooltipBackground      = Color3.fromRGB(10, 14, 18),
-	TooltipBorder          = Color3.fromRGB(86, 119, 126),
-	TooltipText            = Color3.fromRGB(226, 235, 232),
-	LockedControlBackground= Color3.fromRGB(11, 13, 17),
-	LockedControlBorder    = Color3.fromRGB(198, 76, 86),
-	LockedControlIcon      = Color3.fromRGB(238, 87, 97),
-	LockedControlText      = Color3.fromRGB(239, 224, 226),
+	NotificationBackground = Color3.fromRGB(7, 7, 10),
+	NotificationBorder     = Color3.fromRGB(39, 39, 42),
+	NotificationText       = Color3.fromRGB(255, 255, 255),
+	NotificationAccent     = Color3.fromRGB(56, 189, 248),
+	TooltipBackground      = Color3.fromRGB(3, 3, 5),
+	TooltipBorder          = Color3.fromRGB(39, 39, 42),
+	TooltipText            = Color3.fromRGB(228, 228, 231),
+	LockedControlBackground= Color3.fromRGB(7, 7, 10),
+	LockedControlBorder    = Color3.fromRGB(248, 113, 113),
+	LockedControlIcon      = Color3.fromRGB(248, 113, 113),
+	LockedControlText      = Color3.fromRGB(255, 255, 255),
 
-	SaveButtonBackground = Color3.fromRGB(29, 96, 78),
-	SaveButtonHover      = Color3.fromRGB(44, 132, 106),
-	ExitButtonBackground = Color3.fromRGB(91, 59, 53),
-	ExitButtonHover      = Color3.fromRGB(128, 77, 65),
-	CloseButtonBackground = Color3.fromRGB(37, 42, 47),
-	CloseButtonBorder     = Color3.fromRGB(74, 83, 90),
-	CloseButtonHover      = Color3.fromRGB(197, 82, 88),
-	TouchLauncherBackground = Color3.fromRGB(20, 29, 35),
-	TouchLauncherBorder     = Color3.fromRGB(89, 211, 184),
-	TouchLauncherText       = Color3.fromRGB(241, 247, 245),
+	SaveButtonBackground = Color3.fromRGB(3, 105, 161),
+	SaveButtonHover      = Color3.fromRGB(14, 165, 233),
+	ExitButtonBackground = Color3.fromRGB(69, 10, 10),
+	ExitButtonHover      = Color3.fromRGB(248, 113, 113),
+	CloseButtonBackground = Color3.fromRGB(12, 12, 18),
+	CloseButtonBorder     = Color3.fromRGB(39, 39, 42),
+	CloseButtonHover      = Color3.fromRGB(248, 113, 113),
+	TouchLauncherBackground = Color3.fromRGB(7, 7, 10),
+	TouchLauncherBorder     = Color3.fromRGB(56, 189, 248),
+	TouchLauncherText       = Color3.fromRGB(255, 255, 255),
 
-	SectionHover = Color3.fromRGB(27, 35, 42),
+	SectionHover = Color3.fromRGB(18, 18, 26),
 
 	-- Desktop uses Drawing.Fonts.Plex. Potassium maps this identifier to the
 	-- balanced proportional typeface used by the earlier Contact interface;
@@ -535,9 +541,9 @@ Theme = {
 	SectionPadding      = 16,
 	InnerMargin         = 18,
 	ScrollbarWidth      = 7,
-	WindowCornerRadius  = 0,
-	ControlCornerRadius = 0,
-	CompactCornerRadius = 0,
+	WindowCornerRadius  = 12,
+	ControlCornerRadius = 8,
+	CompactCornerRadius = 6,
 
 	-- Color picker grid dimensions.
 	ColorSwatchSize = 24,
@@ -557,10 +563,13 @@ Theme = {
 	TooltipMaximumLines  = 8,
 }
 
+-- Keep the animation integrator on the already-captured Theme table. The large
+-- CreateWindow closure stays within Lua 5.1's strict upvalue budget this way.
+Theme.UpdateAnimationFactor = UpdateAnimationFactor
+
 -- Normalize rectangle rounding across retained and immediate renderers. Normal
--- controls stay square because every theme corner radius is zero; explicit
--- nonzero requests are still honored for true geometric helpers such as the
--- solid-circle fallback.
+-- controls inherit the site's compact eight-pixel radius, while explicit values
+-- remain available for window geometry and true circles.
 do
 	local RawDrawingImmediateRectangle = DrawingImmediateRectangle
 	local RawDrawingImmediateFilledRectangle = DrawingImmediateFilledRectangle
@@ -1524,14 +1533,19 @@ local function MakeDrawingFactory(TrackedDrawingsTable)
 	local function CreateRectangleDrawing(FillColor, IsFilled, ZIndexValue, TransparencyValue)
 		-- Square is the Drawing class used for filled and outlined rectangles.
 		local RectangleObject = CreateTrackedDrawingObject("Square")
-		ApplyDrawingProperties(RectangleObject, {
+		local RectangleProperties = {
 			Color        = FillColor,
 			Filled       = IsFilled,
-			Rounding     = Theme.ControlCornerRadius,
 			Transparency = TransparencyValue or 0.95,
 			ZIndex       = ZIndexValue or 1,
 			Visible      = true,
-		})
+		}
+		-- Potassium's native Square contract has no Rounding property. The local
+		-- ScreenGui emulator intentionally extends Square with it for visual parity.
+		if not DrawingIsNative then
+			RectangleProperties.Rounding = Theme.ControlCornerRadius
+		end
+		ApplyDrawingProperties(RectangleObject, RectangleProperties)
 		if not IsFilled and RectangleObject then
 			SetRenderProperty(RectangleObject, "Thickness", 1)
 		end
@@ -2129,6 +2143,8 @@ function Library:GetRenderingBackends()
 			FilledCircle = DrawingImmediateFilledCircle,
 			Rectangle = DrawingImmediateRectangle,
 			FilledRectangle = DrawingImmediateFilledRectangle,
+			Triangle = DrawingImmediateTriangle,
+			FilledTriangle = DrawingImmediateFilledTriangle,
 			Quad = DrawingImmediateQuad,
 			FilledQuad = DrawingImmediateFilledQuad,
 			Text = DrawingImmediateText,
@@ -2450,9 +2466,9 @@ function Library:CreateWindow(WindowConfiguration)
 		MobileTheme.SectionPadding = 10
 		MobileTheme.InnerMargin = 12
 		MobileTheme.ScrollbarWidth = 8
-		MobileTheme.WindowCornerRadius = 0
-		MobileTheme.ControlCornerRadius = 0
-		MobileTheme.CompactCornerRadius = 0
+		MobileTheme.WindowCornerRadius = 12
+		MobileTheme.ControlCornerRadius = 10
+		MobileTheme.CompactCornerRadius = 8
 		MobileTheme.Base = nil
 		Theme = MobileTheme
 		Library.Theme = Theme
@@ -3155,6 +3171,15 @@ function Library:CreateWindow(WindowConfiguration)
 			Transparency = 0.95,
 			Color = Theme.TitleBarSeparator,
 			ZIndex = 5,
+			Visible = true,
+		})
+
+		Window._TopShimmerDrawing = CreateTrackedDrawingObject("Line")
+		ApplyDrawingProperties(Window._TopShimmerDrawing, {
+			Thickness = 2,
+			Transparency = 0.9,
+			Color = Theme.AccentPrimary,
+			ZIndex = 6,
 			Visible = true,
 		})
 
@@ -8184,6 +8209,50 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		local DeltaSeconds = DeltaTime or 0.0167
+		local VisualTime = os.clock()
+		local AmbientPulse = (math.sin(VisualTime * 2.4) + 1) * 0.5
+		Window._AmbientPulse = AmbientPulse
+		Window._AmbientAccentColor = Theme.AccentPrimary:Lerp(
+			Theme.AccentSecondary,
+			(math.sin(VisualTime * 0.72) + 1) * 0.5
+		)
+
+		-- The site uses soft luminous accents rather than a static colored frame.
+		-- Animate only the two tiny retained primitives here, avoiding a complete
+		-- layout pass on every frame while still keeping retained/immediate parity.
+		if not UseImmediateMode then
+			local AccentCenter = Window._Position + Vector2.new(
+				Theme.InnerMargin + 4,
+				Theme.TitleBarHeight * 0.5
+			)
+			ApplyDrawingProperties(TitleAccentCircleDrawing, {
+				Position = AccentCenter,
+				Radius = LerpValue(2.2, 3.1, AmbientPulse),
+				Color = Window._AmbientAccentColor,
+				Transparency = LerpValue(0.78, 1, AmbientPulse),
+				Visible = true,
+			})
+			ApplyDrawingProperties(TitleAccentOuterGlowCircleDrawing, {
+				Position = AccentCenter,
+				Radius = LerpValue(5, 8, AmbientPulse),
+				Color = Window._AmbientAccentColor,
+				Transparency = LerpValue(0.18, 0.48, AmbientPulse),
+				Visible = true,
+			})
+			if Window._TopShimmerDrawing then
+				local ShimmerWidth = math.clamp(Theme.WindowWidth * 0.16, 54, 112)
+				local ShimmerTravel = math.max(0, Theme.WindowWidth - ShimmerWidth)
+				local ShimmerProgress = (VisualTime * 0.16) % 1
+				local ShimmerStartX = Window._Position.X + ShimmerTravel * ShimmerProgress
+				ApplyDrawingProperties(Window._TopShimmerDrawing, {
+					From = Vector2.new(ShimmerStartX, Window._Position.Y),
+					To = Vector2.new(ShimmerStartX + ShimmerWidth, Window._Position.Y),
+					Color = Window._AmbientAccentColor,
+					Transparency = LerpValue(0.58, 0.95, AmbientPulse),
+					Visible = true,
+				})
+			end
+		end
 		local CurrentMousePosition = QueuedPrimaryClickPosition or Window:GetCurrentPointerPosition()
 		if QueuedPrimaryClickPosition then
 			Window._LastPointerPosition = QueuedPrimaryClickPosition
@@ -8200,7 +8269,7 @@ function Library:CreateWindow(WindowConfiguration)
 		local AnimationChanged = Window._TooltipNeedsLayout == true
 		Window._TooltipNeedsLayout = false
 		local function UpdateAnimationState(CurrentFactor, TargetState, DeltaSecondsValue, Speed)
-			local NewFactor = UpdateAnimationFactor(CurrentFactor, TargetState, DeltaSecondsValue, Speed)
+			local NewFactor = Theme.UpdateAnimationFactor(CurrentFactor, TargetState, DeltaSecondsValue, Speed)
 			if NewFactor ~= CurrentFactor then
 				AnimationChanged = true
 			end
@@ -8648,6 +8717,14 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			local WindowPosition = Window._Position
+			local VisualTime = os.clock()
+			local AmbientPulse = Window._AmbientPulse
+				or (math.sin(VisualTime * 2.4) + 1) * 0.5
+			local AmbientAccentColor = Window._AmbientAccentColor
+				or Theme.AccentPrimary:Lerp(
+					Theme.AccentSecondary,
+					(math.sin(VisualTime * 0.72) + 1) * 0.5
+				)
 			local ViewportStart, ViewportEnd = GetWindowContentViewportYRange(Window, WindowPosition.Y)
 			local WindowWidth = Theme.WindowWidth
 
@@ -8669,6 +8746,17 @@ function Library:CreateWindow(WindowConfiguration)
 				Theme.TitleBarSeparator,
 				0.55,
 				1.25
+			)
+			local ShimmerWidth = math.clamp(WindowWidth * 0.16, 54, 112)
+			local ShimmerTravel = math.max(0, WindowWidth - ShimmerWidth)
+			local ShimmerStartX = WindowPosition.X
+				+ ShimmerTravel * ((VisualTime * 0.16) % 1)
+			DrawingImmediateLine(
+				Vector2.new(ShimmerStartX, WindowPosition.Y),
+				Vector2.new(ShimmerStartX + ShimmerWidth, WindowPosition.Y),
+				AmbientAccentColor,
+				LerpValue(0.58, 0.95, AmbientPulse),
+				2
 			)
 
 			local CurrentMousePosition = Window:GetCurrentPointerPosition()
@@ -8806,8 +8894,21 @@ function Library:CreateWindow(WindowConfiguration)
 				WindowPosition.X + Theme.InnerMargin + 4,
 				WindowPosition.Y + Theme.TitleBarHeight / 2
 			)
-			DrawingImmediateCircle(TitleDotCenter, 5, Theme.TitleBarSeparator, 0.4, 48, 1)
-			DrawImmediateSolidCircle(TitleDotCenter, 2.5, Theme.TitleBarSeparator, 1, 48)
+			DrawingImmediateCircle(
+				TitleDotCenter,
+				LerpValue(5, 8, AmbientPulse),
+				AmbientAccentColor,
+				LerpValue(0.18, 0.48, AmbientPulse),
+				48,
+				1
+			)
+			DrawImmediateSolidCircle(
+				TitleDotCenter,
+				LerpValue(2.2, 3.1, AmbientPulse),
+				AmbientAccentColor,
+				LerpValue(0.78, 1, AmbientPulse),
+				48
+			)
 			DrawingImmediateText(
 				Vector2.new(TitleTextX, TitleTextY),
 				Theme.Font, Theme.TitleFontSize, TitleTextColor, 1, Window._Title, false

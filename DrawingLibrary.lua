@@ -77,9 +77,26 @@ end
 
 local RootScreenGui = cloneref(Instance.new("ScreenGui"))
 RootScreenGui.Name = GenerateRandomString()
-RootScreenGui.Parent = CoreGui
 RootScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 RootScreenGui.IgnoreGuiInset = true
+RootScreenGui.ResetOnSpawn = false
+RootScreenGui.DisplayOrder = 2147483647
+
+local RootScreenGuiParent = CoreGui
+if type(gethui) == "function" then
+    local HiddenInterfaceSucceeded, HiddenInterfaceRoot = pcall(gethui)
+    if HiddenInterfaceSucceeded and typeof(HiddenInterfaceRoot) == "Instance" then
+        RootScreenGuiParent = cloneref(HiddenInterfaceRoot)
+    end
+end
+
+if type(protect_gui) == "function" then
+    pcall(protect_gui, RootScreenGui)
+elseif type(syn) == "table" and type(syn.protect_gui) == "function" then
+    pcall(syn.protect_gui, RootScreenGui)
+end
+
+RootScreenGui.Parent = RootScreenGuiParent
 
 local FontMap = {
     [0] = Enum.Font.SourceSans,
@@ -99,6 +116,7 @@ DrawingLibraryInstance.FontMap = FontMap
 DrawingLibraryInstance.Font = Fonts
 
 local function CreateDrawingProxy(ObjectData, ClassMethods, UpdateCallback)
+    ObjectData.Exists = ObjectData.Exists ~= false
     local DrawingProxy = {}
     local ProxyMetatable = {}
 
@@ -116,7 +134,7 @@ local function CreateDrawingProxy(ObjectData, ClassMethods, UpdateCallback)
         end
 
         if PropertyName == "__OBJECT_EXISTS" then
-            return ObjectData.GuiObject ~= nil
+            return ObjectData.Exists == true
         end
 
         -- Preserve valid false-valued properties such as Visible, Filled,
@@ -148,22 +166,28 @@ end
 
 local BaseDrawingClass = {}
 
+local function RemoveActiveDrawing(DrawingObject)
+    for ObjectIndex = #ActiveDrawingsList, 1, -1 do
+        if ActiveDrawingsList[ObjectIndex] == DrawingObject then
+            table.remove(ActiveDrawingsList, ObjectIndex)
+            return
+        end
+    end
+end
+
 do
     function BaseDrawingClass.Remove(Self)
-        if Self.GuiObject then
-            Self.GuiObject:Destroy()
+        local GuiObject = Self.GuiObject
+        if GuiObject then
+            pcall(GuiObject.Destroy, GuiObject)
             Self.GuiObject = nil
         end
+        Self.__OBJECT_EXISTS = false
+        RemoveActiveDrawing(Self)
     end
 
     function BaseDrawingClass.Destroy(Self)
         Self:Remove()
-        for ObjectIndex, DrawingObject in ipairs(ActiveDrawingsList) do
-            if DrawingObject == Self then
-                table.remove(ActiveDrawingsList, ObjectIndex)
-                break
-            end
-        end
     end
 end
 
@@ -336,7 +360,9 @@ do
         TextLabelInstance.BackgroundTransparency = 1
         TextLabelInstance.Parent = RootScreenGui
         TextLabelInstance.Visible = false
-        TextLabelInstance.RichText = true
+        -- Drawing.Text treats markup as ordinary text. RichText must stay off or
+        -- values containing angle brackets render differently from native Drawing.
+        TextLabelInstance.RichText = false
         TextLabelInstance.Font = FontMap[0]
         TextLabelInstance.TextSize = 18
         TextLabelInstance.AnchorPoint = Vector2.new(0, 0)
@@ -553,6 +579,11 @@ do
             GuiObject.ImageTransparency = 1 - (PropertyValue or 1)
         elseif PropertyName == "Color" then
             GuiObject.ImageColor3 = PropertyValue
+        elseif PropertyName == "Rounding" then
+            local CornerObject = ObjectData.CornerObject
+            if CornerObject then
+                CornerObject.CornerRadius = UDim.new(0, math.max(0, tonumber(PropertyValue) or 0))
+            end
         end
     end
 
@@ -566,131 +597,278 @@ do
         ImageLabelInstance.Visible = false
         ImageLabelInstance.Parent = RootScreenGui
 
+        local CornerInstance = cloneref(Instance.new("UICorner"))
+        CornerInstance.CornerRadius = UDim.new(0, 0)
+        CornerInstance.Parent = ImageLabelInstance
+
         local ObjectData = {
             GuiObject = ImageLabelInstance,
+            CornerObject = CornerInstance,
             Visible = false,
             Data = "",
             Size = Vector2.new(0, 0),
             Position = Vector2.new(0, 0),
             Transparency = 1,
             ZIndex = 1,
-            Color = Color3.new(0, 0, 0)
+            Color = Color3.new(0, 0, 0),
+            Rounding = 0
         }
 
         local ImageProxy = CreateDrawingProxy(ObjectData, setmetatable(ImageDrawing, {__index = BaseDrawingClass}), ImageDrawing.UpdateProperty)
+        ImageDrawing.UpdateProperty(ImageProxy, ObjectData, "Color", ObjectData.Color)
+        ImageDrawing.UpdateProperty(ImageProxy, ObjectData, "Rounding", ObjectData.Rounding)
         table.insert(ActiveDrawingsList, ImageProxy)
         return ImageProxy
     end
 end
 
+-- Roblox GUI objects do not provide a native arbitrary-polygon primitive. The
+-- emulator builds polygon outlines from rotated Frames and filled polygons from
+-- bounded horizontal scanlines. This keeps Triangle and Quad functional without
+-- relying on a remote image asset or an executor-specific extension.
+local PolygonDrawing = {}
+
+local function CreatePolygonSegment(ParentObject)
+    local SegmentFrame = cloneref(Instance.new("Frame"))
+    SegmentFrame.Name = GenerateRandomString()
+    SegmentFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    SegmentFrame.BorderSizePixel = 0
+    SegmentFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+    SegmentFrame.BackgroundTransparency = 0
+    SegmentFrame.Visible = false
+    SegmentFrame.Parent = ParentObject
+    return SegmentFrame
+end
+
+local function ApplyPolygonSegment(SegmentFrame, FromPosition, ToPosition, Thickness, ObjectData)
+    local DeltaVector = ToPosition - FromPosition
+    local Distance = DeltaVector.Magnitude
+    SegmentFrame.Position = UDim2.fromOffset(
+        FromPosition.X + DeltaVector.X * 0.5,
+        FromPosition.Y + DeltaVector.Y * 0.5
+    )
+    SegmentFrame.Size = UDim2.fromOffset(math.max(0.01, Distance), math.max(0.01, Thickness))
+    SegmentFrame.Rotation = math.deg(math.atan2(DeltaVector.Y, DeltaVector.X))
+    SegmentFrame.BackgroundColor3 = ObjectData.Color
+    SegmentFrame.BackgroundTransparency = 1 - math.clamp(tonumber(ObjectData.Transparency) or 1, 0, 1)
+    SegmentFrame.ZIndex = tonumber(ObjectData.ZIndex) or 1
+    SegmentFrame.Visible = true
+end
+
+local function HidePolygonSegments(SegmentList, FirstHiddenIndex)
+    for SegmentIndex = FirstHiddenIndex or 1, #SegmentList do
+        SegmentList[SegmentIndex].Visible = false
+    end
+end
+
+local function GetPolygonSegment(SegmentList, SegmentIndex, ParentObject)
+    local SegmentFrame = SegmentList[SegmentIndex]
+    if not SegmentFrame then
+        SegmentFrame = CreatePolygonSegment(ParentObject)
+        SegmentList[SegmentIndex] = SegmentFrame
+    end
+    return SegmentFrame
+end
+
+local function ReadPolygonPoints(ObjectData)
+    local Points = {}
+    for PointIndex, PropertyName in ipairs(ObjectData.PointPropertyNames) do
+        local PointValue = ObjectData[PropertyName]
+        if typeof(PointValue) ~= "Vector2" then
+            return nil
+        end
+        Points[PointIndex] = PointValue
+    end
+    return Points
+end
+
+local function UpdatePolygon(ObjectData)
+    local ContainerFrame = ObjectData.GuiObject
+    if not ContainerFrame then
+        return
+    end
+
+    ContainerFrame.Visible = ObjectData.Visible == true
+    ContainerFrame.ZIndex = tonumber(ObjectData.ZIndex) or 1
+
+    local Points = ReadPolygonPoints(ObjectData)
+    if not Points or #Points < 3 then
+        HidePolygonSegments(ObjectData.OutlineSegments)
+        HidePolygonSegments(ObjectData.FillSegments)
+        return
+    end
+
+    if ObjectData.Filled ~= true then
+        HidePolygonSegments(ObjectData.FillSegments)
+        local OutlineThickness = math.max(0.01, tonumber(ObjectData.Thickness) or 1)
+        for PointIndex = 1, #Points do
+            local NextPointIndex = PointIndex % #Points + 1
+            ApplyPolygonSegment(
+                GetPolygonSegment(ObjectData.OutlineSegments, PointIndex, ContainerFrame),
+                Points[PointIndex],
+                Points[NextPointIndex],
+                OutlineThickness,
+                ObjectData
+            )
+        end
+        HidePolygonSegments(ObjectData.OutlineSegments, #Points + 1)
+        return
+    end
+
+    HidePolygonSegments(ObjectData.OutlineSegments)
+    local MinimumY, MaximumY = Points[1].Y, Points[1].Y
+    for PointIndex = 2, #Points do
+        MinimumY = math.min(MinimumY, Points[PointIndex].Y)
+        MaximumY = math.max(MaximumY, Points[PointIndex].Y)
+    end
+
+    local PolygonHeight = math.max(0, MaximumY - MinimumY)
+    local ScanlineStep = math.max(1, PolygonHeight / 192)
+    local ScanlineThickness = ScanlineStep + 0.75
+    local SegmentIndex = 0
+    local ScanlineY = MinimumY + ScanlineStep * 0.5
+
+    while ScanlineY < MaximumY and SegmentIndex < 256 do
+        local Intersections = {}
+        for PointIndex = 1, #Points do
+            local FirstPoint = Points[PointIndex]
+            local SecondPoint = Points[PointIndex % #Points + 1]
+            local CrossesScanline = (FirstPoint.Y <= ScanlineY and SecondPoint.Y > ScanlineY)
+                or (SecondPoint.Y <= ScanlineY and FirstPoint.Y > ScanlineY)
+            if CrossesScanline then
+                local EdgeProgress = (ScanlineY - FirstPoint.Y) / (SecondPoint.Y - FirstPoint.Y)
+                Intersections[#Intersections + 1] = FirstPoint.X
+                    + (SecondPoint.X - FirstPoint.X) * EdgeProgress
+            end
+        end
+        table.sort(Intersections)
+
+        for IntersectionIndex = 1, #Intersections - 1, 2 do
+            if SegmentIndex >= 256 then
+                break
+            end
+            local LeftX = Intersections[IntersectionIndex]
+            local RightX = Intersections[IntersectionIndex + 1]
+            if LeftX and RightX and RightX >= LeftX then
+                SegmentIndex = SegmentIndex + 1
+                ApplyPolygonSegment(
+                    GetPolygonSegment(ObjectData.FillSegments, SegmentIndex, ContainerFrame),
+                    Vector2.new(LeftX, ScanlineY),
+                    Vector2.new(RightX, ScanlineY),
+                    ScanlineThickness,
+                    ObjectData
+                )
+            end
+        end
+        ScanlineY = ScanlineY + ScanlineStep
+    end
+    HidePolygonSegments(ObjectData.FillSegments, SegmentIndex + 1)
+end
+
+function PolygonDrawing.UpdateProperty(Self, ObjectData, PropertyName)
+    if PropertyName == "Visible"
+        or PropertyName == "ZIndex"
+        or PropertyName == "Color"
+        or PropertyName == "Transparency"
+        or PropertyName == "Filled"
+        or PropertyName == "Thickness"
+        or (type(PropertyName) == "string" and string.match(PropertyName, "^Point[A-D]$"))
+    then
+        UpdatePolygon(ObjectData)
+    end
+end
+
+local function CreatePolygonDrawing(PointPropertyNames)
+    local ContainerFrame = cloneref(Instance.new("Frame"))
+    ContainerFrame.Name = GenerateRandomString()
+    ContainerFrame.BackgroundTransparency = 1
+    ContainerFrame.BorderSizePixel = 0
+    ContainerFrame.ClipsDescendants = false
+    ContainerFrame.Position = UDim2.fromOffset(0, 0)
+    ContainerFrame.Size = UDim2.new(1, 0, 1, 0)
+    ContainerFrame.Visible = false
+    ContainerFrame.Parent = RootScreenGui
+
+    local ObjectData = {
+        GuiObject = ContainerFrame,
+        PointPropertyNames = PointPropertyNames,
+        OutlineSegments = {},
+        FillSegments = {},
+        Visible = false,
+        Color = Color3.new(0, 0, 0),
+        Transparency = 1,
+        Filled = false,
+        Thickness = 1,
+        ZIndex = 1,
+    }
+    for PointIndex, PropertyName in ipairs(PointPropertyNames) do
+        ObjectData[PropertyName] = Vector2.new(0, 0)
+    end
+
+    local PolygonProxy = CreateDrawingProxy(
+        ObjectData,
+        setmetatable(PolygonDrawing, { __index = BaseDrawingClass }),
+        PolygonDrawing.UpdateProperty
+    )
+    table.insert(ActiveDrawingsList, PolygonProxy)
+    return PolygonProxy
+end
+
 local TriangleDrawing = {}
-
-do
-    local function UpdateTriangle(ObjectData)
-        local GuiObject = ObjectData.GuiObject
-        if not GuiObject then
-            return
-        end
-    end
-
-    function TriangleDrawing.UpdateProperty(Self, ObjectData, PropertyName, PropertyValue)
-        local GuiObject = ObjectData.GuiObject
-        if not GuiObject then
-            return
-        end
-
-        if PropertyName == "Visible" then
-            GuiObject.Visible = PropertyValue
-        elseif PropertyName == "ZIndex" then
-            GuiObject.ZIndex = PropertyValue
-        elseif PropertyName == "Color" then
-            GuiObject.BackgroundColor3 = PropertyValue
-        elseif PropertyName == "Transparency" then
-            GuiObject.BackgroundTransparency = 1 - (PropertyValue or 1)
-        end
-    end
-
-    function TriangleDrawing.Create()
-        local FrameInstance = cloneref(Instance.new("Frame"))
-        FrameInstance.Name = GenerateRandomString()
-        FrameInstance.BorderSizePixel = 0
-        FrameInstance.BackgroundTransparency = 1
-        FrameInstance.Position = UDim2.fromOffset(0, 0)
-        FrameInstance.Size = UDim2.fromOffset(0, 0)
-        FrameInstance.Visible = false
-        FrameInstance.Parent = RootScreenGui
-
-        local ObjectData = {
-            GuiObject = FrameInstance,
-            Visible = false,
-            PointA = Vector2.new(0, 0),
-            PointB = Vector2.new(0, 0),
-            PointC = Vector2.new(0, 0),
-            Color = Color3.new(0, 0, 0),
-            Transparency = 1,
-            Filled = false,
-            Thickness = 1,
-            ZIndex = 1
-        }
-
-        local TriangleProxy = CreateDrawingProxy(ObjectData, setmetatable(TriangleDrawing, {__index = BaseDrawingClass}), TriangleDrawing.UpdateProperty)
-        table.insert(ActiveDrawingsList, TriangleProxy)
-        return TriangleProxy
-    end
+function TriangleDrawing.Create()
+    return CreatePolygonDrawing({ "PointA", "PointB", "PointC" })
 end
 
 local QuadDrawing = {}
+function QuadDrawing.Create()
+    return CreatePolygonDrawing({ "PointA", "PointB", "PointC", "PointD" })
+end
 
-do
-    function QuadDrawing.UpdateProperty(Self, ObjectData, PropertyName, PropertyValue)
-        local GuiObject = ObjectData.GuiObject
-        if not GuiObject then
-            return
-        end
+local FontDrawing = {}
+function FontDrawing.Create()
+    local ObjectData = {
+        Data = "",
+        Exists = true,
+    }
+    local FontProxy = CreateDrawingProxy(
+        ObjectData,
+        setmetatable(FontDrawing, { __index = BaseDrawingClass }),
+        nil
+    )
+    table.insert(ActiveDrawingsList, FontProxy)
+    return FontProxy
+end
 
-        if PropertyName == "Visible" then
-            GuiObject.Visible = PropertyValue
-        elseif PropertyName == "ZIndex" then
-            GuiObject.ZIndex = PropertyValue
-        elseif PropertyName == "Color" then
-            GuiObject.BackgroundColor3 = PropertyValue
-        elseif PropertyName == "Transparency" then
-            GuiObject.BackgroundTransparency = 1 - (PropertyValue or 1)
-        end
-    end
+local ShaderDrawing = {}
+function ShaderDrawing.Create()
+    error("HLSL shaders are unavailable in the ScreenGui Drawing emulator", 2)
+end
 
-    function QuadDrawing.Create()
-        local FrameInstance = cloneref(Instance.new("Frame"))
-        FrameInstance.Name = GenerateRandomString()
-        FrameInstance.BorderSizePixel = 0
-        FrameInstance.BackgroundTransparency = 1
-        FrameInstance.Position = UDim2.fromOffset(0, 0)
-        FrameInstance.Size = UDim2.fromOffset(0, 0)
-        FrameInstance.Visible = false
-        FrameInstance.Parent = RootScreenGui
-
-        local ObjectData = {
-            GuiObject = FrameInstance,
-            Visible = false,
-            PointA = Vector2.new(0, 0),
-            PointB = Vector2.new(0, 0),
-            PointC = Vector2.new(0, 0),
-            PointD = Vector2.new(0, 0),
-            Color = Color3.new(0, 0, 0),
-            Transparency = 1,
-            Filled = false,
-            Thickness = 1,
-            ZIndex = 1
-        }
-
-        local QuadProxy = CreateDrawingProxy(ObjectData, setmetatable(QuadDrawing, {__index = BaseDrawingClass}), QuadDrawing.UpdateProperty)
-        table.insert(ActiveDrawingsList, QuadProxy)
-        return QuadProxy
-    end
+function ShaderDrawing.New()
+    local ObjectData = {
+        Vertex = "",
+        Pixel = "",
+        Position = Vector2.new(0, 0),
+        Size = Vector2.new(0, 0),
+        Exists = true,
+    }
+    local ShaderProxy = CreateDrawingProxy(
+        ObjectData,
+        setmetatable(ShaderDrawing, { __index = BaseDrawingClass }),
+        nil
+    )
+    table.insert(ActiveDrawingsList, ShaderProxy)
+    return ShaderProxy
 end
 
 local function IsRenderObject(ObjectValue)
-    return type(ObjectValue) == "table" and ObjectValue.__OBJECT_EXISTS ~= nil
+    if type(ObjectValue) ~= "table" then
+        return false
+    end
+    local PropertyReadSucceeded, ObjectExists = pcall(function()
+        return ObjectValue.__OBJECT_EXISTS
+    end)
+    return PropertyReadSucceeded and ObjectExists == true
 end
 
 local CustomDrawingFonts = {
@@ -719,8 +897,12 @@ local CustomDrawingNew = function(DrawingType)
         return TriangleDrawing.Create()
     elseif DrawingType == "Quad" then
         return QuadDrawing.Create()
+    elseif DrawingType == "Font" then
+        return FontDrawing.Create()
+    elseif DrawingType == "Shader" then
+        return ShaderDrawing.New()
     else
-        error(string.format("invalid argument #1 to 'new' (Line, Text, Image, Circle, Square, Quad, or Triangle expected, got %s)", DrawingType), 2)
+        error(string.format("invalid argument #1 to 'new' (Line, Text, Image, Circle, Square, Quad, Triangle, Font, or Shader expected, got %s)", DrawingType), 2)
     end
 end
 
@@ -749,10 +931,11 @@ end
 
 local function ClearDrawingCache()
     while #ActiveDrawingsList > 0 do
-        local DrawingObjectInstance = table.remove(ActiveDrawingsList, 1)
-        
+        local DrawingObjectInstance = ActiveDrawingsList[#ActiveDrawingsList]
         if DrawingObjectInstance then
             DrawingObjectInstance:Remove()
+        else
+            table.remove(ActiveDrawingsList)
         end
     end
 end

@@ -541,9 +541,9 @@ Theme = {
 	SectionPadding      = 16,
 	InnerMargin         = 18,
 	ScrollbarWidth      = 7,
-	WindowCornerRadius  = 12,
-	ControlCornerRadius = 8,
-	CompactCornerRadius = 6,
+	WindowCornerRadius  = 0,
+	ControlCornerRadius = 0,
+	CompactCornerRadius = 0,
 
 	-- Color picker grid dimensions.
 	ColorSwatchSize = 24,
@@ -567,9 +567,9 @@ Theme = {
 -- CreateWindow closure stays within Lua 5.1's strict upvalue budget this way.
 Theme.UpdateAnimationFactor = UpdateAnimationFactor
 
--- Normalize rectangle rounding across retained and immediate renderers. Normal
--- controls inherit the site's compact eight-pixel radius, while explicit values
--- remain available for window geometry and true circles.
+-- Normalize rectangle rounding across retained and immediate renderers. The site
+-- theme deliberately resolves ordinary rectangles to zero; explicit nonzero
+-- values remain available only for helpers that intentionally draw circles.
 do
 	local RawDrawingImmediateRectangle = DrawingImmediateRectangle
 	local RawDrawingImmediateFilledRectangle = DrawingImmediateFilledRectangle
@@ -2466,9 +2466,9 @@ function Library:CreateWindow(WindowConfiguration)
 		MobileTheme.SectionPadding = 10
 		MobileTheme.InnerMargin = 12
 		MobileTheme.ScrollbarWidth = 8
-		MobileTheme.WindowCornerRadius = 12
-		MobileTheme.ControlCornerRadius = 10
-		MobileTheme.CompactCornerRadius = 8
+		MobileTheme.WindowCornerRadius = 0
+		MobileTheme.ControlCornerRadius = 0
+		MobileTheme.CompactCornerRadius = 0
 		MobileTheme.Base = nil
 		Theme = MobileTheme
 		Library.Theme = Theme

@@ -1,53 +1,37 @@
-local RawCloneReference = cloneref or clone_ref or clonereference
-local CloneReferenceIsNative = false
-if RawCloneReference then
-    local Success, Source = pcall(debug.info, RawCloneReference, "s")
-    if Success and Source == "[C]" then
-        CloneReferenceIsNative = true
+local CloneFunction, CloneReference, NewCClosure
+
+local function IsNativeExecutorFunction(TargetFunction)
+    if type(TargetFunction) ~= "function" then
+        return false
     end
+
+    local InspectionSucceeded, FunctionSource = pcall(
+        debug.info,
+        TargetFunction,
+        "s"
+    )
+    return InspectionSucceeded and FunctionSource == "[C]"
 end
 
-local cloneref
-if RawCloneReference and CloneReferenceIsNative then
-    cloneref = RawCloneReference
-else
-    cloneref = function(Object)
-        return Object
-    end
-end
+do
+    local RawCloneFunction, RawCloneReference, RawNewCClosure =
+        clonefunc or clonefunction or clone_function,
+        cloneref or clone_ref or clonereference,
+        newcclosure
+    local CloneFunctionIsNative, CloneReferenceIsNative, NewCClosureIsNative =
+        IsNativeExecutorFunction(RawCloneFunction),
+        IsNativeExecutorFunction(RawCloneReference),
+        IsNativeExecutorFunction(RawNewCClosure)
 
-local RawCloneFunction = clonefunc or clonefunction
-local CloneIsNative = false
-if RawCloneFunction then
-    local Success, Source = pcall(debug.info, RawCloneFunction, "s")
-    if Success and Source == "[C]" then
-        CloneIsNative = true
-    end
-end
-
-local clonefunc
-if RawCloneFunction and CloneIsNative then
-    clonefunc = RawCloneFunction
-else
-    clonefunc = function(TargetFunction)
+    CloneFunction = CloneFunctionIsNative and RawCloneFunction or function(TargetFunction)
         return TargetFunction
     end
-end
 
-local RawNewCClosure = newcclosure
-local NewCClosureIsNative = false
-if RawNewCClosure then
-    local Success, Source = pcall(debug.info, RawNewCClosure, "s")
-    if Success and Source == "[C]" then
-        NewCClosureIsNative = true
+    CloneReference = CloneReferenceIsNative and RawCloneReference or function(TargetReference)
+        return TargetReference
     end
-end
 
-local newcclosure
-if RawNewCClosure and NewCClosureIsNative then
-    newcclosure = RawNewCClosure
-else
-    newcclosure = function(TargetFunction)
+    NewCClosure = NewCClosureIsNative and RawNewCClosure or function(TargetFunction)
         return TargetFunction
     end
 end
@@ -57,12 +41,12 @@ local DrawingLibraryInstance = {}
 local ActiveDrawingsList = {}
 
 do
-    GetService = clonefunc(game.GetService)
+    GetService = CloneFunction(game.GetService)
 
-    UserInputService = cloneref(GetService(game, "UserInputService"))
-    CoreGui = cloneref(GetService(game, "CoreGui"))
-    RunService = cloneref(GetService(game, "RunService"))
-    TextService = cloneref(GetService(game, "TextService"))
+    UserInputService = CloneReference(GetService(game, "UserInputService"))
+    CoreGui = CloneReference(GetService(game, "CoreGui"))
+    RunService = CloneReference(GetService(game, "RunService"))
+    TextService = CloneReference(GetService(game, "TextService"))
 end
 
 local function GenerateRandomString()
@@ -75,7 +59,7 @@ local function GenerateRandomString()
     return RandomStringResult
 end
 
-local RootScreenGui = cloneref(Instance.new("ScreenGui"))
+local RootScreenGui = CloneReference(Instance.new("ScreenGui"))
 RootScreenGui.Name = GenerateRandomString()
 RootScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 RootScreenGui.IgnoreGuiInset = true
@@ -86,7 +70,7 @@ local RootScreenGuiParent = CoreGui
 if type(gethui) == "function" then
     local HiddenInterfaceSucceeded, HiddenInterfaceRoot = pcall(gethui)
     if HiddenInterfaceSucceeded and typeof(HiddenInterfaceRoot) == "Instance" then
-        RootScreenGuiParent = cloneref(HiddenInterfaceRoot)
+        RootScreenGuiParent = CloneReference(HiddenInterfaceRoot)
     end
 end
 
@@ -254,7 +238,7 @@ do
     end
 
     function SquareDrawing.Create()
-        local FrameInstance = cloneref(Instance.new("Frame"))
+        local FrameInstance = CloneReference(Instance.new("Frame"))
         FrameInstance.Name = GenerateRandomString()
         FrameInstance.BorderSizePixel = 0
         FrameInstance.BackgroundColor3 = Color3.new(0, 0, 0)
@@ -264,7 +248,7 @@ do
         FrameInstance.Visible = false
         FrameInstance.Parent = RootScreenGui
 
-        local StrokeInstance = cloneref(Instance.new("UIStroke"))
+        local StrokeInstance = CloneReference(Instance.new("UIStroke"))
         StrokeInstance.Name = GenerateRandomString()
         StrokeInstance.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
         StrokeInstance.LineJoinMode = Enum.LineJoinMode.Miter
@@ -273,7 +257,7 @@ do
         StrokeInstance.Enabled = false
         StrokeInstance.Parent = FrameInstance
 
-        local CornerInstance = cloneref(Instance.new("UICorner"))
+        local CornerInstance = CloneReference(Instance.new("UICorner"))
         CornerInstance.CornerRadius = UDim.new(0, 0)
         CornerInstance.Parent = FrameInstance
 
@@ -354,7 +338,7 @@ do
     end
 
     function TextDrawing.Create()
-        local TextLabelInstance = cloneref(Instance.new("TextLabel"))
+        local TextLabelInstance = CloneReference(Instance.new("TextLabel"))
         TextLabelInstance.Name = GenerateRandomString()
         TextLabelInstance.BorderSizePixel = 0
         TextLabelInstance.BackgroundTransparency = 1
@@ -427,7 +411,7 @@ do
     end
 
     function LineDrawing.Create()
-        local FrameInstance = cloneref(Instance.new("Frame"))
+        local FrameInstance = CloneReference(Instance.new("Frame"))
         FrameInstance.Name = GenerateRandomString()
         FrameInstance.BorderSizePixel = 0
         FrameInstance.BackgroundColor3 = Color3.new(0, 0, 0)
@@ -509,7 +493,7 @@ do
     end
 
     function CircleDrawing.Create()
-        local FrameInstance = cloneref(Instance.new("Frame"))
+        local FrameInstance = CloneReference(Instance.new("Frame"))
         FrameInstance.Name = GenerateRandomString()
         FrameInstance.BorderSizePixel = 0
         FrameInstance.BackgroundColor3 = Color3.new(0, 0, 0)
@@ -519,11 +503,11 @@ do
         FrameInstance.Visible = false
         FrameInstance.Parent = RootScreenGui
 
-        local UICornerInstance = cloneref(Instance.new("UICorner"))
+        local UICornerInstance = CloneReference(Instance.new("UICorner"))
         UICornerInstance.CornerRadius = UDim.new(1, 0)
         UICornerInstance.Parent = FrameInstance
 
-        local StrokeInstance = cloneref(Instance.new("UIStroke"))
+        local StrokeInstance = CloneReference(Instance.new("UIStroke"))
         StrokeInstance.Name = GenerateRandomString()
         StrokeInstance.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
         StrokeInstance.Thickness = 1
@@ -588,7 +572,7 @@ do
     end
 
     function ImageDrawing.Create()
-        local ImageLabelInstance = cloneref(Instance.new("ImageLabel"))
+        local ImageLabelInstance = CloneReference(Instance.new("ImageLabel"))
         ImageLabelInstance.Name = GenerateRandomString()
         ImageLabelInstance.BorderSizePixel = 0
         ImageLabelInstance.BackgroundTransparency = 1
@@ -597,7 +581,7 @@ do
         ImageLabelInstance.Visible = false
         ImageLabelInstance.Parent = RootScreenGui
 
-        local CornerInstance = cloneref(Instance.new("UICorner"))
+        local CornerInstance = CloneReference(Instance.new("UICorner"))
         CornerInstance.CornerRadius = UDim.new(0, 0)
         CornerInstance.Parent = ImageLabelInstance
 
@@ -629,7 +613,7 @@ end
 local PolygonDrawing = {}
 
 local function CreatePolygonSegment(ParentObject)
-    local SegmentFrame = cloneref(Instance.new("Frame"))
+    local SegmentFrame = CloneReference(Instance.new("Frame"))
     SegmentFrame.Name = GenerateRandomString()
     SegmentFrame.AnchorPoint = Vector2.new(0.5, 0.5)
     SegmentFrame.BorderSizePixel = 0
@@ -779,7 +763,7 @@ function PolygonDrawing.UpdateProperty(Self, ObjectData, PropertyName)
 end
 
 local function CreatePolygonDrawing(PointPropertyNames)
-    local ContainerFrame = cloneref(Instance.new("Frame"))
+    local ContainerFrame = CloneReference(Instance.new("Frame"))
     ContainerFrame.Name = GenerateRandomString()
     ContainerFrame.BackgroundTransparency = 1
     ContainerFrame.BorderSizePixel = 0

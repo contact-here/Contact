@@ -1,3 +1,49 @@
+--[[
+	═══════════════════════════════════════════════════════════════════════════
+	  Contact UI Library
+	  Drawing-based immediate-mode interface for Roblox executor environments
+	  ─────────────────────────────────────────────────────────────────────────
+	  A single-file, zero-Instance UI toolkit:
+
+	    • Windows with drag, resize, pages, search and smooth scrolling
+	    • Sections with per-section scrolling and viewport culling
+	    • Elements: toggles, sliders, dropdowns (single/multi), text boxes,
+	      buttons, labels, keybinds and color pickers
+	    • Inline visual tokens (":green_circle:") rendered as drawn shapes
+	    • Stacked notifications, touch/mobile support, adaptive scaling
+	    • Per-window input blocking (scroll / touch / interface / camera)
+
+	  Everything renders through the executor's Drawing API - no ScreenGui,
+	  no Instance tree pollution, nothing left behind after :Destroy().
+
+	  Quick start:
+
+	    local Library = loadstring(readfile("Library.lua"))()
+	    local Window  = Library:CreateWindow({
+	        Title    = "My Tool",
+	        Position = Vector2.new(120, 120),
+	    })
+	    local Page    = Window:CreatePage({ Title = "Main" })
+	    local Section = Page:CreateSection({ Title = "Features" })
+	    Section:CreateToggle({
+	        Text    = "Enable",
+	        Default = false,
+	        Callback = function(Enabled) end,
+	    })
+
+	  File layout (top to bottom):
+	    1. Executor compatibility layer
+	    2. Drawing, math and text helpers
+	    3. Theme tokens and color palette
+	    4. Library core utilities
+	    5. Window construction and all element implementations
+	    6. Input blocking coordination
+	═══════════════════════════════════════════════════════════════════════════
+]]
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 1. EXECUTOR COMPATIBILITY LAYER
+-- ───────────────────────────────────────────────────────────────────────────
 -- Executor compatibility helpers are declared up front so later code can use
 -- stable names without caring which executor runtime provided the original
 -- application programming interface.
@@ -165,8 +211,32 @@ if not DrawingIsNative then
 	local RawHttpGet = CloneFunction(DataModel.HttpGet)
 	local RawRequestFunction = request or http_request or (syn and syn.request)
 	local FetchedContent
+	if type(readfile) == "function" then
+		for CandidateIndex, CandidatePath in ipairs({
+			"DrawingLibrary.lua",
+			"./DrawingLibrary.lua",
+		}) do
+			local FileAvailable = true
+			if type(isfile) == "function" then
+				local FileCheckSucceeded, FileCheckResult = pcall(isfile, CandidatePath)
+				FileAvailable = FileCheckSucceeded and FileCheckResult == true
+			end
+			if FileAvailable then
+				local ReadSucceeded, LocalDrawingSource = pcall(readfile, CandidatePath)
+				if ReadSucceeded
+					and type(LocalDrawingSource) == "string"
+					and LocalDrawingSource ~= ""
+				then
+					FetchedContent = LocalDrawingSource
+					break
+				end
+			end
+		end
+	end
 
-	if not string.find(CustomDrawingLibraryLink, "placeholder-link-here") then
+	if not FetchedContent
+		and not string.find(CustomDrawingLibraryLink, "placeholder-link-here")
+	then
 		if RawRequestFunction then
 			-- request/http_request usually provides status codes and response bodies.
 			local RequestSuccess, RequestResult = pcall(RawRequestFunction, { Url = CustomDrawingLibraryLink, Method = "GET" })
@@ -240,6 +310,9 @@ if typeof(DrawingImmediate) == "table" then
 	end
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 2. DRAWING, MATH AND TEXT HELPERS
+-- ───────────────────────────────────────────────────────────────────────────
 -- Render a solid circular marker without relying on FilledCircle. Several
 -- DrawingImmediate builds expose that function with incompatible parameter
 -- orders, which can turn a requested circle into a three-sided polygon. A
@@ -338,6 +411,9 @@ local function RandomString(CharacterCount)
 	return table.concat(ResultCharacters)
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 3. THEME TOKENS AND COLOR PALETTE
+-- ───────────────────────────────────────────────────────────────────────────
 local Theme
 
 -- Lightweight word wrapping for Drawing text. Drawing has no automatic layout
@@ -1580,7 +1656,7 @@ local CreateNotificationDrawingObject, CreateNotificationRectangleDrawing, Creat
 -- Built-in color palette for the color picker popup. The order starts with
 -- grayscale, then saturated hues, then darker and softer variants.
 local ColorPalette = {
-
+	-- Greyscale ramp (dark → light)
 	Color3.fromRGB(0, 0, 0),
 	Color3.fromRGB(30, 30, 30),
 	Color3.fromRGB(60, 60, 60),
@@ -1592,6 +1668,7 @@ local ColorPalette = {
 	Color3.fromRGB(240, 240, 240),
 	Color3.fromRGB(255, 255, 255),
 
+	-- Rainbow sweep
 	Color3.fromRGB(255, 0, 0),
 	Color3.fromRGB(255, 127, 0),
 	Color3.fromRGB(255, 255, 0),
@@ -1603,6 +1680,7 @@ local ColorPalette = {
 	Color3.fromRGB(0, 0, 255),
 	Color3.fromRGB(127, 0, 255),
 
+	-- Named classics (dark red, firebrick, brown, olive, navy, indigo, ...)
 	Color3.fromRGB(139, 0, 0),
 	Color3.fromRGB(178, 34, 34),
 	Color3.fromRGB(153, 76, 0),
@@ -1614,6 +1692,7 @@ local ColorPalette = {
 	Color3.fromRGB(128, 0, 128),
 	Color3.fromRGB(139, 69, 19),
 
+	-- Soft pastels (pink, peach, cream, mint, sky, lavender, ...)
 	Color3.fromRGB(255, 182, 193),
 	Color3.fromRGB(255, 218, 185),
 	Color3.fromRGB(255, 255, 200),
@@ -1625,6 +1704,7 @@ local ColorPalette = {
 	Color3.fromRGB(245, 222, 179),
 	Color3.fromRGB(210, 180, 140),
 
+	-- Vivid accents (rose, tomato, orange, limegreen, turquoise, gold, ...)
 	Color3.fromRGB(255, 0, 128),
 	Color3.fromRGB(255, 65, 54),
 	Color3.fromRGB(255, 165, 0),
@@ -1714,6 +1794,9 @@ local function SetDrawingObjectsVisibility(DrawingObjects, IsVisible)
 	end
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 4. LIBRARY CORE UTILITIES
+-- ───────────────────────────────────────────────────────────────────────────
 local Library = {}
 local SupportedInputBlockingTypes = {
 	Scroll = true,
@@ -2424,6 +2507,9 @@ function Library:ShowNotification(NotificationText, WindowOrPosition)
 	RepositionNotificationStack(ActiveNotificationsList, CurrentTargetPosition)
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 5. WINDOW CONSTRUCTION AND ELEMENTS
+-- ───────────────────────────────────────────────────────────────────────────
 -- Create a draggable window with pages, sections, elements, search, scrolling,
 -- notifications, and adaptive viewport scaling.
 function Library:CreateWindow(WindowConfiguration)
@@ -6000,6 +6086,25 @@ function Library:CreateWindow(WindowConfiguration)
 					Element._WrappedLines = WrappedLines
 					Element._Height = TextBlockHeight(#WrappedLines, Theme.ElementFontSize)
 					Element:_RebuildLineDrawings(WrappedLines)
+				end
+				Window:RecalculateLayout()
+			end
+
+			function Element:Destroy()
+				if Element._Destroyed then
+					return
+				end
+				Element._Destroyed = true
+				DestroyLineDrawings()
+				if Element._AccentLineDrawing then
+					DestroyDrawing(Element._AccentLineDrawing, WindowTrackedDrawings)
+					Element._AccentLineDrawing = nil
+				end
+				for ElementIndex = #Section._Elements, 1, -1 do
+					if Section._Elements[ElementIndex] == Element then
+						table.remove(Section._Elements, ElementIndex)
+						break
+					end
 				end
 				Window:RecalculateLayout()
 			end
@@ -9999,6 +10104,9 @@ function Library:CreateWindow(WindowConfiguration)
 	return Window
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 6. INPUT BLOCKING COORDINATION
+-- ───────────────────────────────────────────────────────────────────────────
 function Library:_ReconcileInputBlocking(Type)
 	local ShouldBlock = false
 

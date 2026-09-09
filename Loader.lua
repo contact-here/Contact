@@ -8,9 +8,14 @@
 local GameScriptConfigurations = {
 	{
 		RequiredGameIdentifier = 7326934954,
-		RequiredPlaceIdentifier = 79546208627805,
-		ScriptUniformResourceLocator = "https://api.luarmor.net/files/v4/loaders/b0085b50bef7e49153fda15f755894d9.lua",
+		RequiredPlaceIdentifier = 126509999114328,
+		ScriptUniformResourceLocator = "https://api.luarmor.net/files/v4/loaders/b97820e6e01f226d0008bb53b38a37b3.lua",
 	},
+	{
+		RequiredGameIdentifier = 66654135,
+		RequiredPlaceIdentifier = 142823291,
+		ScriptUniformResourceLocator = "https://api.luarmor.net/files/v4/loaders/b1d9c28e83468d6e0aba05732cf9a9ce.lua",
+	}
 }
 
 -- Executor compatibility helpers are resolved once at startup. Roblox methods

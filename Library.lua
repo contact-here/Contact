@@ -2630,7 +2630,7 @@ function Library:CreateWindow(WindowConfiguration)
 	}
 
 	Window._Visible = true
-	Window._ShowTouchLauncher = Config.ShowTouchLauncher ~= false
+	Window._ShowTouchLauncher = WindowConfiguration.ShowTouchLauncher ~= false
 
 	Window._ScrollOffset = 0
 	Window._MaxScroll = 0

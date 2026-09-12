@@ -1,22 +1,16 @@
 --[[
-	═══════════════════════════════════════════════════════════════════════════
-	  Contact UI Library
-	  Drawing-based immediate-mode interface for Roblox executor environments
-	  ─────────────────────────────────────────────────────────────────────────
-	  A single-file, zero-Instance UI toolkit:
-
-	    • Windows with drag, resize, pages, search and smooth scrolling
-	    • Sections with per-section scrolling and viewport culling
-	    • Elements: toggles, sliders, dropdowns (single/multi), text boxes,
+	    - Windows with drag, resize, pages, search and smooth scrolling
+	    - Sections with per-section scrolling and viewport culling
+	    - Elements: toggles, sliders, dropdowns (single/multi), text boxes,
 	      buttons, labels, keybinds and color pickers
-	    • Inline visual tokens (":green_circle:") rendered as drawn shapes
-	    • Stacked notifications, touch/mobile support, adaptive scaling
-	    • Per-window input blocking (scroll / touch / interface / camera)
+	    - Inline visual tokens (":green_circle:") rendered as drawn shapes
+	    - Stacked notifications, touch/mobile support, adaptive scaling
+	    - Per-window input blocking (scroll / touch / interface / camera)
 
-	  Everything renders through the executor's Drawing API - no ScreenGui,
-	  no Instance tree pollution, nothing left behind after :Destroy().
+	Everything renders through the executor's Drawing API - no ScreenGui,
+	no Instance tree pollution, nothing left behind after :Destroy().
 
-	  Quick start:
+	Quick start:
 
 	    local Library = loadstring(readfile("Library.lua"))()
 	    local Window  = Library:CreateWindow({
@@ -30,23 +24,11 @@
 	        Default = false,
 	        Callback = function(Enabled) end,
 	    })
-
-	  File layout (top to bottom):
-	    1. Executor compatibility layer
-	    2. Drawing, math and text helpers
-	    3. Theme tokens and color palette
-	    4. Library core utilities
-	    5. Window construction and all element implementations
-	    6. Input blocking coordination
-	═══════════════════════════════════════════════════════════════════════════
 ]]
 
--- ═══════════════════════════════════════════════════════════════════════════
--- 1. EXECUTOR COMPATIBILITY LAYER
--- ───────────────────────────────────────────────────────────────────────────
--- Executor compatibility helpers are declared up front so later code can use
--- stable names without caring which executor runtime provided the original
--- application programming interface.
+-- Executor compatibility layer. Executor compatibility helpers are declared
+-- up front so later code can use stable names without caring which executor
+-- runtime provided the original application programming interface.
 local CloneFunction, CloneReference, NewCClosure
 
 -- Executor-only controls must distinguish native runtime functions from Lua
@@ -310,15 +292,13 @@ if typeof(DrawingImmediate) == "table" then
 	end
 end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- 2. DRAWING, MATH AND TEXT HELPERS
--- ───────────────────────────────────────────────────────────────────────────
--- Render a solid circular marker without relying on FilledCircle. Several
--- DrawingImmediate builds expose that function with incompatible parameter
--- orders, which can turn a requested circle into a three-sided polygon. A
--- maximally rounded square is geometrically circular and its parameter order is
--- stable. The thick outline-circle fallback covers unusually limited runtimes.
--- Dropdown arrows remain the only triangular control indicators.
+-- Drawing, math and text helpers. Render a solid circular marker without
+-- relying on FilledCircle. Several DrawingImmediate builds expose that
+-- function with incompatible parameter orders, which can turn a requested
+-- circle into a three-sided polygon. A maximally rounded square is
+-- geometrically circular and its parameter order is stable. The thick
+-- outline-circle fallback covers unusually limited runtimes. Dropdown arrows
+-- remain the only triangular control indicators.
 local function DrawImmediateSolidCircle(Center, Radius, Color, Opacity, NumberOfSides)
 	local SafeRadius = math.max(1, tonumber(Radius) or 1)
 	local SafeOpacity = math.clamp(tonumber(Opacity) or 1, 0, 1)
@@ -411,9 +391,7 @@ local function RandomString(CharacterCount)
 	return table.concat(ResultCharacters)
 end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- 3. THEME TOKENS AND COLOR PALETTE
--- ───────────────────────────────────────────────────────────────────────────
+-- Theme tokens and color palette.
 local Theme
 
 -- Lightweight word wrapping for Drawing text. Drawing has no automatic layout
@@ -1794,9 +1772,7 @@ local function SetDrawingObjectsVisibility(DrawingObjects, IsVisible)
 	end
 end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- 4. LIBRARY CORE UTILITIES
--- ───────────────────────────────────────────────────────────────────────────
+-- Library core utilities.
 local Library = {}
 local SupportedInputBlockingTypes = {
 	Scroll = true,
@@ -1969,16 +1945,25 @@ local function IsTouchInterfaceDevice()
 	if UserInputService.TouchEnabled ~= true then
 		return false
 	end
-	if UserInputService.KeyboardEnabled == true or UserInputService.MouseEnabled == true then
-		-- Some executors report DeviceType.Unknown and TouchEnabled on ordinary
-		-- personal computers. Physical keyboard or mouse availability is a stronger
-		-- desktop signal than the touch capability bit and prevents the permanent
-		-- TouchInterface sink from disabling camera and mouse window controls.
+	if UserInputService.MouseEnabled == true then
+		-- A touch-capable Windows/desktop touchscreen always reports the mouse.
+		-- Phones and tablets report touch with no mouse, so the mouse bit alone is
+		-- the reliable desktop discriminator. KeyboardEnabled is deliberately NOT
+		-- used here: Android frequently reports a soft keyboard as enabled, and the
+		-- old check wrongly classified those phones as desktops, which made the
+		-- interface fall back to the fixed desktop geometry and look broken or
+		-- off-screen on real touch devices.
+		return false
+	end
+	if UserInputService.GamepadEnabled == true then
 		return false
 	end
 
 	local ViewportSize = GetViewportSize()
-	return math.min(ViewportSize.X, ViewportSize.Y) <= 1400
+	-- No mouse and touch present is already a strong mobile signal; the compact
+	-- viewport test only guards exotic setups (e.g. a mouse-less touch kiosk on a
+	-- huge display). Anything up to a tablet portrait width is treated as touch.
+	return math.min(ViewportSize.X, ViewportSize.Y) <= 1600
 end
 
 -- Application scripts use this capability query to expose controls that only
@@ -2507,11 +2492,9 @@ function Library:ShowNotification(NotificationText, WindowOrPosition)
 	RepositionNotificationStack(ActiveNotificationsList, CurrentTargetPosition)
 end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- 5. WINDOW CONSTRUCTION AND ELEMENTS
--- ───────────────────────────────────────────────────────────────────────────
--- Create a draggable window with pages, sections, elements, search, scrolling,
--- notifications, and adaptive viewport scaling.
+-- Window construction and elements. Create a draggable window with pages,
+-- sections, elements, search, scrolling, notifications, and adaptive viewport
+-- scaling.
 function Library:CreateWindow(WindowConfiguration)
 	WindowConfiguration = WindowConfiguration or {}
 	WindowConfiguration.Title = WindowConfiguration.Title or "Window"
@@ -2539,18 +2522,18 @@ function Library:CreateWindow(WindowConfiguration)
 		-- the complete window to the currently visible phone or tablet area.
 		MobileTheme.Font = 0
 		MobileTheme.FontCharWidthRatio = 0.5
-		MobileTheme.TitleFontSize = 19
-		MobileTheme.HeaderSecondaryFontSize = 10
-		MobileTheme.SectionFontSize = 15
-		MobileTheme.SectionMetaFontSize = 10
-		MobileTheme.ElementFontSize = 14
+		MobileTheme.TitleFontSize = 20
+		MobileTheme.HeaderSecondaryFontSize = 11
+		MobileTheme.SectionFontSize = 16
+		MobileTheme.SectionMetaFontSize = 11
+		MobileTheme.ElementFontSize = 15
 		MobileTheme.WindowWidth = 640
 		MobileTheme.WindowVisibleHeight = 560
-		MobileTheme.ElementHeight = 40
-		MobileTheme.TitleBarHeight = 48
-		MobileTheme.ElementPadding = 8
-		MobileTheme.SectionPadding = 10
-		MobileTheme.InnerMargin = 12
+		MobileTheme.ElementHeight = 44
+		MobileTheme.TitleBarHeight = 52
+		MobileTheme.ElementPadding = 10
+		MobileTheme.SectionPadding = 12
+		MobileTheme.InnerMargin = 14
 		MobileTheme.ScrollbarWidth = 8
 		MobileTheme.WindowCornerRadius = 0
 		MobileTheme.ControlCornerRadius = 0
@@ -3399,7 +3382,9 @@ function Library:CreateWindow(WindowConfiguration)
 		local Camera = GetCurrentCamera()
 		local ViewportSize = Camera and Camera.ViewportSize or Vector2.new(1920, 1080)
 		local LauncherRadius = math.clamp(Theme.ElementHeight * 0.82, 28, 38)
-		local LauncherMargin = math.max(8, math.floor(LauncherRadius * 0.28))
+		-- Keep the launcher tight to the leading edge so it clears the Roblox
+		-- top-bar buttons (menu/chat/voice) that sit further right on phones.
+		local LauncherMargin = math.max(4, math.floor(LauncherRadius * 0.14))
 		local LauncherCenter
 
 		-- TopbarInset is the live rectangle Roblox reserves as usable top-bar
@@ -3445,6 +3430,24 @@ function Library:CreateWindow(WindowConfiguration)
 		Window._TouchLayoutWasPortrait = PortraitLayout
 		Window._UseSingleColumnLayout = PortraitLayout or ViewportSize.X <= 760
 
+		-- Roblox overlays the camera viewport with its own top bar on touch
+		-- devices. Reserve that band so the window title bar (and its collapse /
+		-- close controls) never open underneath the Roblox buttons. The value is
+		-- capped at a fraction of the screen so a bad TopbarInset reading cannot
+		-- push the whole interface off the bottom.
+		local TouchTopInset = 0
+		local TopbarInsetReadSucceeded, TopbarInset = pcall(function()
+			return GraphicalUserInterfaceService.TopbarInset
+		end)
+		if TopbarInsetReadSucceeded
+			and typeof(TopbarInset) == "Rect"
+			and TopbarInset.Height > 0
+		then
+			TouchTopInset = TopbarInset.Height
+		end
+		TouchTopInset = math.clamp(TouchTopInset, 0, ViewportSize.Y * 0.12)
+		Window._TouchTopInset = TouchTopInset
+
 		if (ShouldResetResponsiveBase or TouchOrientationChanged) and Window._InitialResponsiveBaseGeometry then
 			-- Restore the original touch dimensions before recomputing the responsive
 			-- profile. This gives configuration reset and orientation changes a real
@@ -3459,14 +3462,14 @@ function Library:CreateWindow(WindowConfiguration)
 		local MaximumWindowWidth = math.max(180, ViewportSize.X - ViewportMargin * 2)
 		local MaximumVisibleBodyHeight = math.max(
 			180,
-			ViewportSize.Y - Theme.TitleBarHeight - ViewportMargin * 2
+			ViewportSize.Y - Theme.TitleBarHeight - ViewportMargin * 2 - TouchTopInset
 		)
 
 		if not Window._HasAppliedDeviceGeometry then
 			-- Landscape touch screens benefit from a compact centered tool window so
 			-- Roblox controls remain reachable around it. Portrait screens receive a
 			-- wider single-column surface while still preserving outside margins.
-			local PreferredWidthFraction = PortraitLayout and 0.92 or 0.66
+			local PreferredWidthFraction = PortraitLayout and 0.94 or 0.66
 			local MaximumPreferredWidth = PortraitLayout and 820 or 880
 			local MinimumPreferredWidth = math.min(PortraitLayout and 320 or 520, MaximumWindowWidth)
 			local PreferredWindowWidth = math.min(
@@ -3479,8 +3482,8 @@ function Library:CreateWindow(WindowConfiguration)
 				MaximumWindowWidth
 			)
 
-			local PreferredBodyHeightFraction = PortraitLayout and 0.68 or 0.60
-			local MaximumPreferredBodyHeight = PortraitLayout and 760 or 580
+			local PreferredBodyHeightFraction = PortraitLayout and 0.74 or 0.64
+			local MaximumPreferredBodyHeight = PortraitLayout and 820 or 600
 			local MinimumPreferredBodyHeight = math.min(PortraitLayout and 320 or 260, MaximumVisibleBodyHeight)
 			local PreferredBodyHeight = math.min(
 				MaximumPreferredBodyHeight,
@@ -7507,8 +7510,10 @@ function Library:CreateWindow(WindowConfiguration)
 	end
 
 	local function SetSearchTextBoxFocus(IsFocused)
-		-- Search is not stored inside a section, but it uses the same native
-		-- TextBox bridge and focus lifecycle as every regular text field.
+		-- Search shares the exact same native TextBox bridge (a random-named
+		-- ScreenGui + TextBox parented under CoreGui) as every regular text
+		-- field. Clear any prior focus first so opening the search bar always
+		-- re-captures the bridge, not only when the field itself is clicked.
 		local ShouldFocus = IsFocused == true
 		if not ShouldFocus then
 			Window:ReleaseNativeTextInput(Window._SearchTextBox)
@@ -7520,6 +7525,7 @@ function Library:CreateWindow(WindowConfiguration)
 			return false
 		end
 
+		ClearFocusedTextBoxes()
 		if not Window:FocusNativeTextInput(Window._SearchTextBox) then
 			Window._SearchTextBox._IsFocused = false
 			Window._SearchTextBox._CursorVisible = false
@@ -10011,7 +10017,7 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Desktop retains the original proportional scale, which produced the dense
 		-- two-column layout on common 1200- and 1680-wide displays. Touch screens keep
 		-- a larger lower bound so controls remain comfortable to press.
-		local MinimumScale = Window._TouchInputAvailable and 0.78 or 0.62
+		local MinimumScale = Window._TouchInputAvailable and 0.80 or 0.62
 		local Scale = math.clamp(RawScale, MinimumScale, 1.35)
 		Window._CurrentViewportScale = Scale
 
@@ -10035,22 +10041,38 @@ function Library:CreateWindow(WindowConfiguration)
 		Window._VisibleHeight = Theme.WindowVisibleHeight
 
 		-- Keep the window inside the visible camera area after a resize, display
-		-- mode change, or mobile rotation.
+		-- mode change, or mobile rotation. On touch the usable band starts below
+		-- the Roblox top bar, so the minimum Y and the centered Y both reserve the
+		-- top inset. Desktop keeps its original 8-pixel margin.
+		local TopSafeInset = (Window._TouchInputAvailable and Window._TouchTopInset) or 0
+		local MinimumPositionY = TopSafeInset + 8
 		local MaximumPositionX = math.max(8, Viewport.X - Theme.WindowWidth - 8)
-		local MaximumPositionY = math.max(8, Viewport.Y - (Theme.TitleBarHeight + Window._VisibleHeight) - 8)
-		if Window._TouchInputAvailable and not Window._ViewportScaleInitialized then
+		local MaximumPositionY = math.max(MinimumPositionY, Viewport.Y - (Theme.TitleBarHeight + Window._VisibleHeight) - 8)
+		-- When the window was built before a camera existed, the first pass centered
+		-- it for the assumed 1920x1080 fallback. Re-center once more as soon as a
+		-- real viewport is available so touch devices open correctly centered for
+		-- their actual screen instead of being shoved to a clamped corner.
+		local ShouldCenterForTouch = Window._TouchInputAvailable
+			and (not Window._ViewportScaleInitialized or not Window._HadRealViewport)
+		if ShouldCenterForTouch then
 			Window._Position = Vector2.new(
 				math.max(8, (Viewport.X - Theme.WindowWidth) / 2),
-				math.max(8, (Viewport.Y - Theme.TitleBarHeight - Window._VisibleHeight) / 2)
+				math.max(
+					MinimumPositionY,
+					TopSafeInset + (Viewport.Y - TopSafeInset - Theme.TitleBarHeight - Window._VisibleHeight) / 2
+				)
 			)
 		else
 			Window._Position = Vector2.new(
 				math.clamp(Window._Position.X, 8, MaximumPositionX),
-				math.clamp(Window._Position.Y, 8, MaximumPositionY)
+				math.clamp(Window._Position.Y, MinimumPositionY, MaximumPositionY)
 			)
 		end
 
 		Window._ViewportScaleInitialized = true
+		if Camera then
+			Window._HadRealViewport = true
+		end
 		Window:UpdateTouchLauncherDrawings()
 	end
 
@@ -10088,7 +10110,12 @@ function Library:CreateWindow(WindowConfiguration)
 			"TopbarInset"
 		)
 		local TopbarInsetConnection = ConnectSignal(TopbarInsetChangedSignal, NewCClosure(function()
-			Window:UpdateTouchLauncherDrawings()
+			-- The stored top inset is re-read live inside ApplyTouchViewportGeometry
+			-- (called by UpdateViewportScale), so a chat/menu expansion that grows
+			-- the Roblox top bar re-clamps the window into the new safe band and
+			-- republishes the launcher position through the same path.
+			UpdateViewportScale()
+			Window:RecalculateLayout()
 		end))
 		table.insert(Window._Connections, TopbarInsetConnection)
 	end
@@ -10104,9 +10131,7 @@ function Library:CreateWindow(WindowConfiguration)
 	return Window
 end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- 6. INPUT BLOCKING COORDINATION
--- ───────────────────────────────────────────────────────────────────────────
+-- Input blocking coordination.
 function Library:_ReconcileInputBlocking(Type)
 	local ShouldBlock = false
 

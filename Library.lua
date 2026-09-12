@@ -2630,6 +2630,7 @@ function Library:CreateWindow(WindowConfiguration)
 	}
 
 	Window._Visible = true
+	Window._ShowTouchLauncher = Config.ShowTouchLauncher ~= false
 
 	Window._ScrollOffset = 0
 	Window._MaxScroll = 0
@@ -3526,7 +3527,8 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
-		local LauncherShouldBeVisible = not Window._Destroyed
+		local LauncherShouldBeVisible = Window._ShowTouchLauncher
+			and not Window._Destroyed
 			and (not Window._Visible or not Library._Visible)
 		local LauncherGeometry = Window:GetTouchLauncherGeometry()
 		local LauncherTextSize = math.max(18, Theme.TitleFontSize)
@@ -3851,12 +3853,15 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 		NativeTextInputState.Synchronizing = false
 
-		-- CaptureFocus is deferred until the pointer callback finishes. Roblox can
-		-- otherwise discard a focus request made inside the same mouse or touch
-		-- event that selected the Drawing control.
+		-- Always clear stale Roblox focus before recapturing. Some clients keep the
+		-- hidden TextBox in a released-but-still-focused state after search closes,
+		-- which prevents the software keyboard from opening on the next search.
+		pcall(NativeTextInputState.ReleaseFocus, NativeTextInputTextBox, false)
 		task.defer(function()
+			task.wait()
 			if not Window._Destroyed
 				and Window._Visible
+				and Library._Visible
 				and NativeTextInputState.TargetElement == TargetElement then
 				local FocusCaptureSucceeded = pcall(
 					NativeTextInputState.CaptureFocus,
@@ -5694,6 +5699,9 @@ function Library:CreateWindow(WindowConfiguration)
 			-- isolated controls visible after the window itself has disappeared.
 			SetDrawingObjectsVisibility(WindowTrackedDrawings, false)
 			UpdateElementsVisibility()
+		end
+		if not IsVisible then
+			SetDrawingObjectsVisibility(WindowTrackedDrawings, false)
 		end
 		Window:UpdateTouchLauncherDrawings()
 	end

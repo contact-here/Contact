@@ -467,107 +467,107 @@ Theme = {
 	-- contactinghere.lol uses an almost-black canvas, translucent white surfaces,
 	-- bright type, and small cyan/red signals. These tokens mirror that visual
 	-- hierarchy while keeping every state readable in a Drawing-only renderer.
-	AccentPrimary          = Color3.fromRGB(56, 189, 248),
-	AccentSecondary        = Color3.fromRGB(248, 113, 113),
-	AccentNeutral          = Color3.fromRGB(228, 228, 231),
-	WindowBackground       = Color3.fromRGB(3, 3, 5),
-	WindowSurfaceHighlight = Color3.fromRGB(18, 18, 26),
+	AccentPrimary          = Color3.fromRGB(165, 165, 165),
+	AccentSecondary        = Color3.fromRGB(142, 142, 142),
+	AccentNeutral          = Color3.fromRGB(228, 228, 228),
+	WindowBackground       = Color3.fromRGB(3, 3, 3),
+	WindowSurfaceHighlight = Color3.fromRGB(19, 19, 19),
 	WindowSurfaceShade     = Color3.fromRGB(0, 0, 0),
-	WindowBorder           = Color3.fromRGB(39, 39, 42),
-	WindowBorderHover      = Color3.fromRGB(161, 161, 170),
+	WindowBorder           = Color3.fromRGB(39, 39, 39),
+	WindowBorderHover      = Color3.fromRGB(162, 162, 162),
 
 	-- The title bar gets a cooler tint than the body to make dragging and
 	-- window ownership visually obvious.
-	TitleBarBackground     = Color3.fromRGB(7, 7, 10),
-	TitleBarBackgroundHover= Color3.fromRGB(12, 12, 18),
-	TitleBarHighlight      = Color3.fromRGB(23, 23, 25),
-	TitleBarAccentWash     = Color3.fromRGB(12, 12, 18),
-	TitleBarSeparator      = Color3.fromRGB(228, 228, 231),
+	TitleBarBackground     = Color3.fromRGB(7, 7, 7),
+	TitleBarBackgroundHover= Color3.fromRGB(12, 12, 12),
+	TitleBarHighlight      = Color3.fromRGB(23, 23, 23),
+	TitleBarAccentWash     = Color3.fromRGB(12, 12, 12),
+	TitleBarSeparator      = Color3.fromRGB(228, 228, 228),
 	TitleBarText           = Color3.fromRGB(255, 255, 255),
 	TitleBarTextHover      = Color3.fromRGB(255, 255, 255),
 
 	-- Sections are slightly warmer than the window background, giving stacked
 	-- groups enough depth without relying on heavy borders.
-	SectionBodyBackground  = Color3.fromRGB(7, 7, 10),
-	SectionBackground      = Color3.fromRGB(12, 12, 18),
-	SectionBackgroundHover = Color3.fromRGB(18, 18, 26),
-	SectionText            = Color3.fromRGB(161, 161, 170),
+	SectionBodyBackground  = Color3.fromRGB(7, 7, 7),
+	SectionBackground      = Color3.fromRGB(12, 12, 12),
+	SectionBackgroundHover = Color3.fromRGB(19, 19, 19),
+	SectionText            = Color3.fromRGB(162, 162, 162),
 	SectionTextHover       = Color3.fromRGB(255, 255, 255),
 
-	LabelText      = Color3.fromRGB(161, 161, 170),
+	LabelText      = Color3.fromRGB(162, 162, 162),
 	LabelTextHover = Color3.fromRGB(255, 255, 255),
 
-	ButtonBackground      = Color3.fromRGB(12, 12, 18),
-	ButtonBackgroundHover = Color3.fromRGB(23, 23, 25),
+	ButtonBackground      = Color3.fromRGB(12, 12, 12),
+	ButtonBackgroundHover = Color3.fromRGB(23, 23, 23),
 	ButtonText            = Color3.fromRGB(255, 255, 255),
-	ButtonBorder          = Color3.fromRGB(39, 39, 42),
-	TabBackground         = Color3.fromRGB(7, 7, 10),
-	TabBackgroundHover    = Color3.fromRGB(18, 18, 26),
-	TabBackgroundActive   = Color3.fromRGB(23, 23, 25),
-	ToggleInactive        = Color3.fromRGB(63, 63, 70),
-	ToggleActive          = Color3.fromRGB(56, 189, 248),
+	ButtonBorder          = Color3.fromRGB(39, 39, 39),
+	TabBackground         = Color3.fromRGB(7, 7, 7),
+	TabBackgroundHover    = Color3.fromRGB(19, 19, 19),
+	TabBackgroundActive   = Color3.fromRGB(23, 23, 23),
+	ToggleInactive        = Color3.fromRGB(64, 64, 64),
+	ToggleActive          = Color3.fromRGB(165, 165, 165),
 
-	TextBoxBackground      = Color3.fromRGB(7, 7, 10),
-	TextBoxBackgroundHover = Color3.fromRGB(12, 12, 18),
-	TextBoxBorder          = Color3.fromRGB(39, 39, 42),
-	TextBoxBorderFocused   = Color3.fromRGB(56, 189, 248),
+	TextBoxBackground      = Color3.fromRGB(7, 7, 7),
+	TextBoxBackgroundHover = Color3.fromRGB(12, 12, 12),
+	TextBoxBorder          = Color3.fromRGB(39, 39, 39),
+	TextBoxBorderFocused   = Color3.fromRGB(165, 165, 165),
 	TextBoxText            = Color3.fromRGB(255, 255, 255),
-	TextBoxPlaceholder     = Color3.fromRGB(113, 113, 122),
+	TextBoxPlaceholder     = Color3.fromRGB(114, 114, 114),
 	TextBoxCursor          = Color3.fromRGB(255, 255, 255),
-	TextBoxSelection       = Color3.fromRGB(56, 189, 248),
+	TextBoxSelection       = Color3.fromRGB(165, 165, 165),
 
-	DropdownBackground    = Color3.fromRGB(7, 7, 10),
-	DropdownHover         = Color3.fromRGB(12, 12, 18),
-	DropdownItemBackground= Color3.fromRGB(3, 3, 5),
-	DropdownItemHover     = Color3.fromRGB(18, 18, 26),
-	DropdownText          = Color3.fromRGB(228, 228, 231),
-	DropdownBorder        = Color3.fromRGB(39, 39, 42),
-	DropdownBorderHover   = Color3.fromRGB(161, 161, 170),
-	DropdownArrow         = Color3.fromRGB(161, 161, 170),
+	DropdownBackground    = Color3.fromRGB(7, 7, 7),
+	DropdownHover         = Color3.fromRGB(12, 12, 12),
+	DropdownItemBackground= Color3.fromRGB(3, 3, 3),
+	DropdownItemHover     = Color3.fromRGB(19, 19, 19),
+	DropdownText          = Color3.fromRGB(228, 228, 228),
+	DropdownBorder        = Color3.fromRGB(39, 39, 39),
+	DropdownBorderHover   = Color3.fromRGB(162, 162, 162),
+	DropdownArrow         = Color3.fromRGB(162, 162, 162),
 
-	SliderTrackBackground = Color3.fromRGB(7, 7, 10),
-	SliderTrackFill       = Color3.fromRGB(56, 189, 248),
-	SliderTrackFillHover  = Color3.fromRGB(125, 211, 252),
-	SliderText            = Color3.fromRGB(228, 228, 231),
-	SliderBorder          = Color3.fromRGB(39, 39, 42),
+	SliderTrackBackground = Color3.fromRGB(7, 7, 7),
+	SliderTrackFill       = Color3.fromRGB(165, 165, 165),
+	SliderTrackFillHover  = Color3.fromRGB(196, 196, 196),
+	SliderText            = Color3.fromRGB(228, 228, 228),
+	SliderBorder          = Color3.fromRGB(39, 39, 39),
 	SliderTrackHeight       = 8,
 	SliderTrackHoverHeight  = 10,
 	SliderThumbRadius       = 7,
 	SliderThumbHoverRadius  = 9,
 	ToggleIndicatorRadius   = 5,
 
-	ColorPickerBorder      = Color3.fromRGB(39, 39, 42),
+	ColorPickerBorder      = Color3.fromRGB(39, 39, 39),
 	ColorPickerSelectedBorder = Color3.fromRGB(255, 255, 255),
-	ColorPickerSwatchHover = Color3.fromRGB(161, 161, 170),
+	ColorPickerSwatchHover = Color3.fromRGB(162, 162, 162),
 
-	ScrollbarBackground  = Color3.fromRGB(7, 7, 10),
-	ScrollbarHandle      = Color3.fromRGB(39, 39, 42),
-	ScrollbarHandleHover = Color3.fromRGB(82, 82, 91),
+	ScrollbarBackground  = Color3.fromRGB(7, 7, 7),
+	ScrollbarHandle      = Color3.fromRGB(39, 39, 39),
+	ScrollbarHandleHover = Color3.fromRGB(83, 83, 83),
 
-	NotificationBackground = Color3.fromRGB(7, 7, 10),
-	NotificationBorder     = Color3.fromRGB(39, 39, 42),
+	NotificationBackground = Color3.fromRGB(7, 7, 7),
+	NotificationBorder     = Color3.fromRGB(39, 39, 39),
 	NotificationText       = Color3.fromRGB(255, 255, 255),
-	NotificationAccent     = Color3.fromRGB(56, 189, 248),
-	TooltipBackground      = Color3.fromRGB(3, 3, 5),
-	TooltipBorder          = Color3.fromRGB(39, 39, 42),
-	TooltipText            = Color3.fromRGB(228, 228, 231),
-	LockedControlBackground= Color3.fromRGB(7, 7, 10),
-	LockedControlBorder    = Color3.fromRGB(248, 113, 113),
-	LockedControlIcon      = Color3.fromRGB(248, 113, 113),
+	NotificationAccent     = Color3.fromRGB(165, 165, 165),
+	TooltipBackground      = Color3.fromRGB(3, 3, 3),
+	TooltipBorder          = Color3.fromRGB(39, 39, 39),
+	TooltipText            = Color3.fromRGB(228, 228, 228),
+	LockedControlBackground= Color3.fromRGB(7, 7, 7),
+	LockedControlBorder    = Color3.fromRGB(142, 142, 142),
+	LockedControlIcon      = Color3.fromRGB(142, 142, 142),
 	LockedControlText      = Color3.fromRGB(255, 255, 255),
 
-	SaveButtonBackground = Color3.fromRGB(3, 105, 161),
-	SaveButtonHover      = Color3.fromRGB(14, 165, 233),
-	ExitButtonBackground = Color3.fromRGB(69, 10, 10),
-	ExitButtonHover      = Color3.fromRGB(248, 113, 113),
-	CloseButtonBackground = Color3.fromRGB(12, 12, 18),
-	CloseButtonBorder     = Color3.fromRGB(39, 39, 42),
-	CloseButtonHover      = Color3.fromRGB(248, 113, 113),
-	TouchLauncherBackground = Color3.fromRGB(7, 7, 10),
-	TouchLauncherBorder     = Color3.fromRGB(56, 189, 248),
+	SaveButtonBackground = Color3.fromRGB(87, 87, 87),
+	SaveButtonHover      = Color3.fromRGB(138, 138, 138),
+	ExitButtonBackground = Color3.fromRGB(23, 23, 23),
+	ExitButtonHover      = Color3.fromRGB(142, 142, 142),
+	CloseButtonBackground = Color3.fromRGB(12, 12, 12),
+	CloseButtonBorder     = Color3.fromRGB(39, 39, 39),
+	CloseButtonHover      = Color3.fromRGB(142, 142, 142),
+	TouchLauncherBackground = Color3.fromRGB(7, 7, 7),
+	TouchLauncherBorder     = Color3.fromRGB(165, 165, 165),
 	TouchLauncherText       = Color3.fromRGB(255, 255, 255),
 
-	SectionHover = Color3.fromRGB(18, 18, 26),
+	SectionHover = Color3.fromRGB(19, 19, 19),
 
 	-- Desktop uses Drawing.Fonts.Plex. Potassium maps this identifier to the
 	-- balanced proportional typeface used by the earlier Contact interface;
@@ -2523,7 +2523,7 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Touch controls need a larger unscaled target than desktop controls. The
 		-- viewport pass below performs the final proportional scaling and clamps
 		-- the complete window to the currently visible phone or tablet area.
-		MobileTheme.Font = 0
+		MobileTheme.Font = 2
 		MobileTheme.FontCharWidthRatio = 0.5
 		MobileTheme.TitleFontSize = 20
 		MobileTheme.HeaderSecondaryFontSize = 11
@@ -2676,15 +2676,7 @@ function Library:CreateWindow(WindowConfiguration)
 	end
 
 	function Window:GetHeaderMetaText()
-		if Window._StandaloneLayout then
-			return ""
-		end
-
-		local PageCount = #Window._Pages
-		if PageCount == 0 then
-			return "Page -- / --"
-		end
-		return string.format("Page %02d / %02d", Window._ActivePageIndex, PageCount)
+		return ""
 	end
 
 
@@ -4955,7 +4947,7 @@ function Library:CreateWindow(WindowConfiguration)
 					local TitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionAbsolutePosition.Y + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					local IsTitleVisible = IsSectionVisible and (TitleY >= ViewportStart) and (TitleY + Theme.SectionFontSize <= ViewportEnd)
-					local SectionIndexText = Window._StandaloneLayout and "" or string.format("%02d", Section._Index or 0)
+					local SectionIndexText = ""
 					local SectionIndexBounds = GetTextBounds(SectionIndexText, Theme.SectionMetaFontSize)
 					local AvailableTitleWidth = math.max(
 						1,
@@ -5206,7 +5198,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 			if TitleAccentCircleDrawing then
 				SetRenderProperty(TitleAccentCircleDrawing, "Position", Vector2.new(
-					WindowPosition.X + Theme.InnerMargin + 4,
+					WindowPosition.X + Theme.InnerMargin - 2,
 					WindowPosition.Y + Theme.TitleBarHeight / 2
 				))
 				SetRenderProperty(TitleAccentCircleDrawing, "Color", Theme.TitleBarSeparator)
@@ -5214,7 +5206,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 			if TitleAccentOuterGlowCircleDrawing then
 				SetRenderProperty(TitleAccentOuterGlowCircleDrawing, "Position", Vector2.new(
-					WindowPosition.X + Theme.InnerMargin + 4,
+					WindowPosition.X + Theme.InnerMargin - 2,
 					WindowPosition.Y + Theme.TitleBarHeight / 2
 				))
 				SetRenderProperty(TitleAccentOuterGlowCircleDrawing, "Color", Theme.TitleBarSeparator)
@@ -5276,7 +5268,7 @@ function Library:CreateWindow(WindowConfiguration)
 				or Vector2.new(0, 0)
 			local HeaderTextWidth = math.max(TitleBounds.X, DescriptionBounds.X)
 			local TitleSafeRightX = WindowPosition.X + Theme.InnerMargin + 12 + HeaderTextWidth + 20
-			local HeaderMetaVisible = not Window._StandaloneLayout and Window._Visible and HeaderMetaPositionX > TitleSafeRightX
+			local HeaderMetaVisible = HeaderMetaText ~= "" and Window._Visible and HeaderMetaPositionX > TitleSafeRightX
 
 			if TitleBarMetaDrawing then
 				ApplyDrawingProperties(TitleBarMetaDrawing, {
@@ -6000,7 +5992,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Section._Border = CreateRectangleDrawing(Theme.WindowBorder, false, 6, 0.6)
 			Section._TextLabel = CreateTextDrawing(SectionConfiguration.Title, Theme.SectionFontSize, Theme.SectionText, 7)
 			Section._IndexTextLabel = CreateTextDrawing(
-				string.format("%02d", Section._Index),
+				"",
 				Theme.SectionMetaFontSize,
 				Theme.TextBoxPlaceholder,
 				7
@@ -9033,7 +9025,7 @@ function Library:CreateWindow(WindowConfiguration)
 			)
 
 			local TitleDotCenter = Vector2.new(
-				WindowPosition.X + Theme.InnerMargin + 4,
+				WindowPosition.X + Theme.InnerMargin - 2,
 				WindowPosition.Y + Theme.TitleBarHeight / 2
 			)
 			DrawingImmediateCircle(
@@ -9073,7 +9065,7 @@ function Library:CreateWindow(WindowConfiguration)
 					or Vector2.new(0, 0)
 				local HeaderTextWidth = math.max(TitleBounds.X, DescriptionBounds.X)
 				local TitleSafeRightX = TitleTextX + HeaderTextWidth + 20
-				if not Window._StandaloneLayout and HeaderMetaPositionX > TitleSafeRightX then
+				if HeaderMetaText ~= "" and HeaderMetaPositionX > TitleSafeRightX then
 					DrawingImmediateText(
 						Vector2.new(
 							HeaderMetaPositionX,
@@ -9158,7 +9150,7 @@ function Library:CreateWindow(WindowConfiguration)
 					local SectionTitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionYPosition + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					if TitleY >= ViewportStart and TitleY + Theme.SectionFontSize <= ViewportEnd then
-						local SectionIndexText = Window._StandaloneLayout and "" or string.format("%02d", Section._Index or 0)
+						local SectionIndexText = ""
 						local SectionIndexBounds = GetTextBounds(SectionIndexText, Theme.SectionMetaFontSize)
 						local AvailableTitleWidth = math.max(1, Section._Width - SectionIndexBounds.X - 34)
 						local MaximumTitleCharacters = math.max(
@@ -10338,7 +10330,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 	end
 
 	-- PromptKey owns a dedicated library instance; these tokens do not alter the game UI.
-	Theme.Font = 0
+	Theme.Font = 2
 	Theme.TitleFontSize = 20
 	Theme.HeaderSecondaryFontSize = 12
 	Theme.ElementFontSize = 15
@@ -10347,11 +10339,11 @@ function Library:PromptKey(KeyPromptConfiguration)
 	Theme.ElementPadding = 10
 	Theme.InnerMargin = 22
 	Theme.SectionPadding = 18
-	Theme.WindowBackground = Color3.fromRGB(10, 12, 17)
-	Theme.SectionBodyBackground = Color3.fromRGB(14, 17, 23)
-	Theme.ButtonBackground = Color3.fromRGB(22, 28, 38)
-	Theme.ButtonBackgroundHover = Color3.fromRGB(30, 46, 62)
-	Theme.ButtonBorder = Color3.fromRGB(47, 61, 78)
+	Theme.WindowBackground = Color3.fromRGB(12, 12, 12)
+	Theme.SectionBodyBackground = Color3.fromRGB(17, 17, 17)
+	Theme.ButtonBackground = Color3.fromRGB(27, 27, 27)
+	Theme.ButtonBackgroundHover = Color3.fromRGB(44, 44, 44)
+	Theme.ButtonBorder = Color3.fromRGB(59, 59, 59)
 	Theme.TitleBarSeparator = Theme.AccentPrimary
 
 	local KeyPromptFinished = false
@@ -10375,6 +10367,12 @@ function Library:PromptKey(KeyPromptConfiguration)
 		Text = KeyPromptConfiguration.InitialStatusMessage
 			or "Choose a provider, then paste your key below.",
 	})
+	local function ShowKeyVerificationFailure(FailureMessage)
+		local NotificationMessage = tostring(FailureMessage or "Verification failed. Please retry.")
+		VerificationStatusLabel:SetText(NotificationMessage)
+		self:ShowNotification(NotificationMessage, KeyPromptWindow)
+	end
+
 	local ProviderLinkTextBox
 
 	for ProviderIndex, KeyProviderConfiguration in ipairs(KeyPromptConfiguration.KeyProviders or {}) do
@@ -10392,7 +10390,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 						KeyProviderConfiguration.DisplayName .. " link copied. Open it in your browser."
 					)
 				else
-					VerificationStatusLabel:SetText("Clipboard unavailable. Copy the link below manually.")
+					ShowKeyVerificationFailure("Clipboard unavailable. Copy the link below manually.")
 					if not ProviderLinkTextBox then
 						ProviderLinkTextBox = KeyProviderSection:CreateTextBox({
 							Text = "Link",
@@ -10426,7 +10424,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 
 			local SubmittedScriptKey = tostring(ScriptKeyTextBox:GetValue() or ""):match("^%s*(.-)%s*$")
 			if SubmittedScriptKey == "" then
-				VerificationStatusLabel:SetText("Enter your key first.")
+				ShowKeyVerificationFailure("KEY_INVALID: Enter your key first.")
 				return
 			end
 
@@ -10454,7 +10452,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 						tostring(KeyVerificationMessage or "Key rejected. Please try again.")
 					)
 				else
-					VerificationStatusLabel:SetText("Verification failed. Please retry.")
+					ShowKeyVerificationFailure("Verification failed. Please retry.")
 				end
 			end)
 		end,
@@ -10472,6 +10470,10 @@ function Library:PromptKey(KeyPromptConfiguration)
 			(CurrentViewportSize.Y - Theme.TitleBarHeight - Theme.WindowVisibleHeight) / 2
 		),
 	})
+
+	if KeyPromptConfiguration.InitialStatusMessage then
+		ShowKeyVerificationFailure(KeyPromptConfiguration.InitialStatusMessage)
+	end
 
 	while not KeyPromptFinished do
 		task.wait(0.1)

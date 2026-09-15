@@ -10351,7 +10351,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 	local KeyVerificationInProgress = false
 	local KeyPromptWindow = self:CreateWindow({
 		Title = "Contact",
-		Description = "Key system  /  Secure access",
+		Description = "Key system",
 		StandaloneLayout = true,
 		ShowTouchLauncher = false,
 	})
@@ -10414,7 +10414,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 	local VerifyScriptKeyButton
 
 	VerifyScriptKeyButton = KeyProviderSection:CreateTextButton({
-		Text = "Verify & continue",
+		Text = "Continue",
 		CenteredText = true,
 		PrimaryAction = true,
 		Callback = function()

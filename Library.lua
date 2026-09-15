@@ -10465,7 +10465,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 
 			local SubmittedScriptKey = tostring(ScriptKeyTextBox:GetValue() or ""):match("^%s*(.-)%s*$")
 			if SubmittedScriptKey == "" then
-				ShowKeyVerificationFailure("KEY_INVALID: Enter your key first.")
+				ShowKeyVerificationFailure("Enter your key first.")
 				return
 			end
 

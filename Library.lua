@@ -2585,7 +2585,8 @@ function Library:CreateWindow(WindowConfiguration)
 	Window._Destroyed = false
 	Window._Destroying = false
 	Window._TouchInputAvailable = TouchInputAvailable
-	Window._UseSingleColumnLayout = false
+	Window._StandaloneLayout = WindowConfiguration.StandaloneLayout == true
+	Window._UseSingleColumnLayout = Window._StandaloneLayout
 	Window._TouchLayoutWasPortrait = nil
 	Window._ViewportScaleInitialized = false
 	Window._CurrentViewportScale = 1
@@ -2653,7 +2654,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 	Window._Pages = {}
 	Window._ActivePageIndex = 1
-	Window._TabBarHeight = 40
+	Window._TabBarHeight = Window._StandaloneLayout and 0 or 40
 	Window._TabDrawings = {}
 	Window._TabScrollOffset = 0
 
@@ -2675,6 +2676,10 @@ function Library:CreateWindow(WindowConfiguration)
 	end
 
 	function Window:GetHeaderMetaText()
+		if Window._StandaloneLayout then
+			return ""
+		end
+
 		local PageCount = #Window._Pages
 		if PageCount == 0 then
 			return "Page -- / --"
@@ -3432,7 +3437,7 @@ function Library:CreateWindow(WindowConfiguration)
 		local TouchOrientationChanged = Window._TouchLayoutWasPortrait ~= nil
 			and Window._TouchLayoutWasPortrait ~= PortraitLayout
 		Window._TouchLayoutWasPortrait = PortraitLayout
-		Window._UseSingleColumnLayout = PortraitLayout or ViewportSize.X <= 760
+		Window._UseSingleColumnLayout = Window._StandaloneLayout or PortraitLayout or ViewportSize.X <= 760
 
 		-- Roblox overlays the camera viewport with its own top bar on touch
 		-- devices. Reserve that band so the window title bar (and its collapse /
@@ -4015,6 +4020,15 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
+		if Window._StandaloneLayout then
+			local CurrentViewportSize = GetViewportSize()
+			local TopSafeInset = Window._TouchTopInset or 0
+			Window._Position = Vector2.new(
+				math.max(8, (CurrentViewportSize.X - Theme.WindowWidth) / 2),
+				math.max(TopSafeInset + 8, TopSafeInset + (CurrentViewportSize.Y - TopSafeInset - Theme.TitleBarHeight - Window._VisibleHeight) / 2)
+			)
+		end
+
 		local WindowPosition = Window._Position
 		local ViewportStart, ViewportEnd = GetWindowContentViewportYRange(Window, WindowPosition.Y)
 		local LayoutRequiresScrollbarCorrection = false
@@ -4267,7 +4281,9 @@ function Library:CreateWindow(WindowConfiguration)
 							})
 						end
 					elseif Element._Type == "TextButton" then
-						local ButtonBackgroundColor = Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
+						local ButtonBackgroundColor = Element._PrimaryAction
+						and Theme.AccentPrimary:Lerp(Theme.ButtonBackgroundHover, 0.65 - (Element._HoverFactor or 0) * 0.2)
+						or Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
 						if Element._BackgroundDrawing then
 							ApplyDrawingProperties(Element._BackgroundDrawing, { Position = ElementAbsolutePosition, Size = ElementAbsoluteSize, Color = ButtonBackgroundColor, Visible = IsElementVisible })
 						end
@@ -4281,7 +4297,9 @@ function Library:CreateWindow(WindowConfiguration)
 							local DisplayText = TruncateTextWithAsciiEllipsis(Element._Text, MaximumCharacters)
 							ApplyDrawingProperties(Element._TextDrawing, {
 								Text = DisplayText,
-								Position = ElementAbsolutePosition + Vector2.new(10, (Element._Height - Theme.ElementFontSize) / 2),
+								Position = Element._CenteredText
+								and GetCenteredTextPosition(DisplayText, Theme.ElementFontSize, ElementAbsolutePosition, ElementAbsoluteSize)
+								or ElementAbsolutePosition + Vector2.new(10, (Element._Height - Theme.ElementFontSize) / 2),
 								Size = Theme.ElementFontSize,
 								Color = Theme.ButtonText,
 								Visible = IsElementVisible,
@@ -4937,7 +4955,7 @@ function Library:CreateWindow(WindowConfiguration)
 					local TitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionAbsolutePosition.Y + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					local IsTitleVisible = IsSectionVisible and (TitleY >= ViewportStart) and (TitleY + Theme.SectionFontSize <= ViewportEnd)
-					local SectionIndexText = string.format("%02d", Section._Index or 0)
+					local SectionIndexText = Window._StandaloneLayout and "" or string.format("%02d", Section._Index or 0)
 					local SectionIndexBounds = GetTextBounds(SectionIndexText, Theme.SectionMetaFontSize)
 					local AvailableTitleWidth = math.max(
 						1,
@@ -5225,7 +5243,7 @@ function Library:CreateWindow(WindowConfiguration)
 						Color = ResizeGripColor,
 						Thickness = Window._TouchInputAvailable and 2 or 1.35,
 						Transparency = Window._ResizeGripHovered and 0.9 or 0.42,
-						Visible = Window._Visible,
+						Visible = Window._Visible and not Window._StandaloneLayout,
 					})
 				end
 			end
@@ -5258,7 +5276,7 @@ function Library:CreateWindow(WindowConfiguration)
 				or Vector2.new(0, 0)
 			local HeaderTextWidth = math.max(TitleBounds.X, DescriptionBounds.X)
 			local TitleSafeRightX = WindowPosition.X + Theme.InnerMargin + 12 + HeaderTextWidth + 20
-			local HeaderMetaVisible = Window._Visible and HeaderMetaPositionX > TitleSafeRightX
+			local HeaderMetaVisible = not Window._StandaloneLayout and Window._Visible and HeaderMetaPositionX > TitleSafeRightX
 
 			if TitleBarMetaDrawing then
 				ApplyDrawingProperties(TitleBarMetaDrawing, {
@@ -5291,13 +5309,13 @@ function Library:CreateWindow(WindowConfiguration)
 				ApplyDrawingProperties(Window._SearchIconCircle, {
 					Position = CenterPoint,
 					Color = SearchIconColor,
-					Visible = Window._Visible,
+					Visible = Window._Visible and not Window._StandaloneLayout,
 				})
 				ApplyDrawingProperties(Window._SearchIconLine, {
 					From = CenterPoint + Vector2.new(3, 3),
 					To = CenterPoint + Vector2.new(8, 8),
 					Color = SearchIconColor,
-					Visible = Window._Visible,
+					Visible = Window._Visible and not Window._StandaloneLayout,
 				})
 			end
 
@@ -5855,7 +5873,7 @@ function Library:CreateWindow(WindowConfiguration)
 			_HoverFactor = 0,
 		}
 
-		Window._TabBarHeight = 34
+		Window._TabBarHeight = Window._StandaloneLayout and 0 or 34
 
 		if #Window._Pages == 0 then
 			Window._ActivePageIndex = 1
@@ -6338,6 +6356,8 @@ function Library:CreateWindow(WindowConfiguration)
 			Element._Height = Theme.ElementHeight
 			Element._Text = ButtonConfiguration.Text
 			Element._Callback = ButtonConfiguration.Callback
+			Element._CenteredText = ButtonConfiguration.CenteredText == true
+			Element._PrimaryAction = ButtonConfiguration.PrimaryAction == true
 			Element._IsHovered = false
 			Element._PositionX = 0
 			Element._PositionY = 0
@@ -7599,7 +7619,7 @@ function Library:CreateWindow(WindowConfiguration)
 				Region = Window._CloseButtonRegion,
 			}
 		end
-		if Window._SearchButtonRegion and IsPointInsideRectangle(
+		if not Window._StandaloneLayout and Window._SearchButtonRegion and IsPointInsideRectangle(
 			PointerPosition,
 			Window._SearchButtonRegion.Position,
 			Window._SearchButtonRegion.Size
@@ -7828,7 +7848,7 @@ function Library:CreateWindow(WindowConfiguration)
 				QueuedPrimaryClick = false
 				QueuedPrimaryClickPosition = nil
 				if TouchTarget and TouchTarget.Kind == "Title bar" then
-					Window._Dragging = true
+					Window._Dragging = not Window._StandaloneLayout
 					Window._DragOffset = StartPointerPosition - TouchInteractionState.StartWindowPosition
 				elseif TouchTarget and TouchTarget.Kind == "Resize" then
 					Window._Resizing = true
@@ -8038,7 +8058,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Page._IsHovered = PageIndex == HoveredPageIndex
 		end
 
-		if Window._SearchButtonRegion then
+		if not Window._StandaloneLayout and Window._SearchButtonRegion then
 			Window._SearchButtonHovered = IsPointInsideRectangle(CurrentMousePosition, Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
 		else
 			Window._SearchButtonHovered = false
@@ -8235,7 +8255,7 @@ function Library:CreateWindow(WindowConfiguration)
 			Position = ResizeGripPosition,
 			Size = Vector2.new(ResizeGripSize, ResizeGripSize)
 		}
-		Window._ResizeGripHovered = Window._Visible and IsPointInsideRectangle(CurrentMousePosition, Window._ResizeGripRegion.Position, Window._ResizeGripRegion.Size) or false
+		Window._ResizeGripHovered = not Window._StandaloneLayout and Window._Visible and IsPointInsideRectangle(CurrentMousePosition, Window._ResizeGripRegion.Position, Window._ResizeGripRegion.Size) or false
 
 		local TitleHitboxPosition = Vector2.new(Window._Position.X + Theme.InnerMargin, Window._Position.Y)
 		local TitleHitboxSize = Vector2.new(math.min(180, Theme.WindowWidth / 2), Theme.TitleBarHeight)
@@ -8623,7 +8643,7 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			if Window._TitleBarHovered then
-				Window._Dragging = true
+				Window._Dragging = not Window._StandaloneLayout
 				Window._DragOffset = CurrentMousePosition - Window._Position
 				RefreshInterfaceCaptureState()
 				return
@@ -8913,7 +8933,7 @@ function Library:CreateWindow(WindowConfiguration)
 				Position = Vector2.new(WindowPosition.X + WindowWidth - ResizeGripSize, WindowPosition.Y + Theme.TitleBarHeight + ContentHeight - ResizeGripSize),
 				Size = Vector2.new(ResizeGripSize, ResizeGripSize)
 			}
-			Window._ResizeGripHovered = IsPointInsideRectangle(CurrentMousePosition, Window._ResizeGripRegion.Position, Window._ResizeGripRegion.Size)
+			Window._ResizeGripHovered = not Window._StandaloneLayout and IsPointInsideRectangle(CurrentMousePosition, Window._ResizeGripRegion.Position, Window._ResizeGripRegion.Size)
 
 			local SeparatorStart = Vector2.new(WindowPosition.X, WindowPosition.Y + Theme.TitleBarHeight)
 			local SeparatorEnd = Vector2.new(WindowPosition.X + WindowWidth, WindowPosition.Y + Theme.TitleBarHeight)
@@ -9042,7 +9062,7 @@ function Library:CreateWindow(WindowConfiguration)
 				)
 			end
 
-			if Window._SearchButtonRegion then
+			if not Window._StandaloneLayout and Window._SearchButtonRegion then
 				local HeaderMetaText = Window:GetHeaderMetaText()
 				local HeaderMetaBounds = GetTextBounds(HeaderMetaText, Theme.HeaderSecondaryFontSize)
 				local HeaderActionSeparatorX = Window._SearchButtonRegion.Position.X - 10
@@ -9053,7 +9073,7 @@ function Library:CreateWindow(WindowConfiguration)
 					or Vector2.new(0, 0)
 				local HeaderTextWidth = math.max(TitleBounds.X, DescriptionBounds.X)
 				local TitleSafeRightX = TitleTextX + HeaderTextWidth + 20
-				if HeaderMetaPositionX > TitleSafeRightX then
+				if not Window._StandaloneLayout and HeaderMetaPositionX > TitleSafeRightX then
 					DrawingImmediateText(
 						Vector2.new(
 							HeaderMetaPositionX,
@@ -9086,7 +9106,7 @@ function Library:CreateWindow(WindowConfiguration)
 				)
 			end
 
-			if Window._SearchButtonRegion then
+			if not Window._StandaloneLayout and Window._SearchButtonRegion then
 				local MouseIsOverSearch = IsPointInsideRectangle(CurrentMousePosition, Window._SearchButtonRegion.Position, Window._SearchButtonRegion.Size)
 				local SearchIconColor = Window._SearchActive and Theme.TitleBarSeparator or (MouseIsOverSearch and Theme.TitleBarTextHover or Theme.TitleBarText)
 				local SearchIconCenter = Window._SearchButtonRegion.Position + Window._SearchButtonRegion.Size / 2
@@ -9138,7 +9158,7 @@ function Library:CreateWindow(WindowConfiguration)
 					local SectionTitleColor = Theme.SectionText:Lerp(Theme.SectionTextHover, Section._HoverFactor or 0)
 					local TitleY = SectionYPosition + (Theme.ElementHeight - Theme.SectionFontSize) / 2
 					if TitleY >= ViewportStart and TitleY + Theme.SectionFontSize <= ViewportEnd then
-						local SectionIndexText = string.format("%02d", Section._Index or 0)
+						local SectionIndexText = Window._StandaloneLayout and "" or string.format("%02d", Section._Index or 0)
 						local SectionIndexBounds = GetTextBounds(SectionIndexText, Theme.SectionMetaFontSize)
 						local AvailableTitleWidth = math.max(1, Section._Width - SectionIndexBounds.X - 34)
 						local MaximumTitleCharacters = math.max(
@@ -9243,7 +9263,9 @@ function Library:CreateWindow(WindowConfiguration)
 								end
 							end
 						elseif Element._Type == "TextButton" then
-							local ButtonColor = Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
+							local ButtonColor = Element._PrimaryAction
+							and Theme.AccentPrimary:Lerp(Theme.ButtonBackgroundHover, 0.65 - (Element._HoverFactor or 0) * 0.2)
+							or Theme.ButtonBackground:Lerp(Theme.ButtonBackgroundHover, Element._HoverFactor or 0)
 							local ClippedPos, ClippedSize = ClipRectangleToYRange(ElementPosition, ElementSize, AllowedMinY, AllowedMaxY)
 							if ClippedPos and ClippedSize then
 								DrawingImmediateFilledRectangle(ClippedPos, ClippedSize, ButtonColor, 1, 0)
@@ -9269,7 +9291,9 @@ function Library:CreateWindow(WindowConfiguration)
 								local MaximumCharacters = math.max(1, math.floor(AvailableTextWidth / CharacterWidth))
 								local DisplayText = TruncateTextWithAsciiEllipsis(Element._Text, MaximumCharacters)
 								DrawingImmediateText(
-									Vector2.new(WindowPosition.X + Element._PositionX + 10, TextY),
+									Element._CenteredText
+									and GetCenteredTextPosition(DisplayText, Theme.ElementFontSize, ElementPosition, ElementSize)
+									or Vector2.new(WindowPosition.X + Element._PositionX + 10, TextY),
 									Theme.Font, Theme.ElementFontSize, Theme.ButtonText, 1, DisplayText, false
 								)
 							end
@@ -9689,7 +9713,7 @@ function Library:CreateWindow(WindowConfiguration)
 				WindowPosition.Y + Theme.TitleBarHeight + ContentHeight - ResizeGripCornerInset
 			)
 			local ResizeGripColor = Window._ResizeGripHovered and Theme.TitleBarTextHover or Theme.TitleBarSeparator
-			for ResizeGripLineIndex = 1, 3 do
+			for ResizeGripLineIndex = 1, Window._StandaloneLayout and 0 or 3 do
 				local ResizeGripOffset = ResizeGripLineIndex * ResizeGripLineSpacing
 				DrawingImmediateLine(
 					ResizeGripCornerPosition - Vector2.new(ResizeGripOffset, 0),
@@ -10048,7 +10072,7 @@ function Library:CreateWindow(WindowConfiguration)
 
 		Window:ApplyTouchViewportGeometry(Viewport, Scale, false)
 
-		Window._TabBarHeight = 34 * Scale
+		Window._TabBarHeight = Window._StandaloneLayout and 0 or 34 * Scale
 		Window._VisibleHeight = Theme.WindowVisibleHeight
 
 		-- Keep the window inside the visible camera area after a resize, display
@@ -10065,7 +10089,7 @@ function Library:CreateWindow(WindowConfiguration)
 		-- their actual screen instead of being shoved to a clamped corner.
 		local ShouldCenterForTouch = Window._TouchInputAvailable
 			and (not Window._ViewportScaleInitialized or not Window._HadRealViewport)
-		if ShouldCenterForTouch then
+		if ShouldCenterForTouch or Window._StandaloneLayout then
 			Window._Position = Vector2.new(
 				math.max(8, (Viewport.X - Theme.WindowWidth) / 2),
 				math.max(
@@ -10313,12 +10337,30 @@ function Library:PromptKey(KeyPromptConfiguration)
 		return nil
 	end
 
+	-- PromptKey owns a dedicated library instance; these tokens do not alter the game UI.
+	Theme.Font = 0
+	Theme.TitleFontSize = 20
+	Theme.HeaderSecondaryFontSize = 12
+	Theme.ElementFontSize = 15
+	Theme.TitleBarHeight = 58
+	Theme.ElementHeight = 40
+	Theme.ElementPadding = 10
+	Theme.InnerMargin = 22
+	Theme.SectionPadding = 18
+	Theme.WindowBackground = Color3.fromRGB(10, 12, 17)
+	Theme.SectionBodyBackground = Color3.fromRGB(14, 17, 23)
+	Theme.ButtonBackground = Color3.fromRGB(22, 28, 38)
+	Theme.ButtonBackgroundHover = Color3.fromRGB(30, 46, 62)
+	Theme.ButtonBorder = Color3.fromRGB(47, 61, 78)
+	Theme.TitleBarSeparator = Theme.AccentPrimary
+
 	local KeyPromptFinished = false
 	local AcceptedScriptKey
 	local KeyVerificationInProgress = false
 	local KeyPromptWindow = self:CreateWindow({
 		Title = "Contact",
-		Description = "Key system",
+		Description = "Key system  /  Secure access",
+		StandaloneLayout = true,
 		ShowTouchLauncher = false,
 	})
 
@@ -10327,7 +10369,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 	end
 
 	local KeyProviderSection = KeyPromptWindow:CreateSection({
-		Title = "Get your key",
+		Title = "Choose how to get your key",
 	})
 	local VerificationStatusLabel = KeyProviderSection:CreateTextLabel({
 		Text = KeyPromptConfiguration.InitialStatusMessage
@@ -10337,12 +10379,13 @@ function Library:PromptKey(KeyPromptConfiguration)
 
 	for ProviderIndex, KeyProviderConfiguration in ipairs(KeyPromptConfiguration.KeyProviders or {}) do
 		KeyProviderSection:CreateTextButton({
-			Text = KeyProviderConfiguration.DisplayName,
+			Text = "Get key via " .. KeyProviderConfiguration.DisplayName,
+			CenteredText = true,
 			Callback = function()
 				local ClipboardWriteSucceeded = self.CopyTextToClipboard(
 					KeyProviderConfiguration.UniformResourceLocator
 				)
-				ProviderLinkTextBox:SetValue(KeyProviderConfiguration.UniformResourceLocator)
+				
 
 				if ClipboardWriteSucceeded then
 					VerificationStatusLabel:SetText(
@@ -10350,25 +10393,32 @@ function Library:PromptKey(KeyPromptConfiguration)
 					)
 				else
 					VerificationStatusLabel:SetText("Clipboard unavailable. Copy the link below manually.")
+					if not ProviderLinkTextBox then
+						ProviderLinkTextBox = KeyProviderSection:CreateTextBox({
+							Text = "Link",
+							Placeholder = "Copy this link into your browser",
+							Default = KeyProviderConfiguration.UniformResourceLocator,
+						})
+					else
+						ProviderLinkTextBox:SetValue(KeyProviderConfiguration.UniformResourceLocator)
+					end
 				end
 			end,
 		})
 	end
 
-	ProviderLinkTextBox = KeyProviderSection:CreateTextBox({
-		Text = "Link",
-		Placeholder = "Provider link",
-		Default = "",
-	})
+
 	local ScriptKeyTextBox = KeyProviderSection:CreateTextBox({
 		Text = "Key",
-		Placeholder = "Paste your key",
+		Placeholder = "Paste the key you received",
 		Default = "",
 	})
 	local VerifyScriptKeyButton
 
 	VerifyScriptKeyButton = KeyProviderSection:CreateTextButton({
-		Text = "Verify key",
+		Text = "Verify & continue",
+		CenteredText = true,
+		PrimaryAction = true,
 		Callback = function()
 			if KeyVerificationInProgress or KeyPromptFinished then
 				return
@@ -10394,7 +10444,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 				end
 
 				KeyVerificationInProgress = false
-				VerifyScriptKeyButton:SetText("Verify key")
+				VerifyScriptKeyButton:SetText("Verify & continue")
 
 				if KeyVerificationSucceeded and ScriptKeyIsValid == true then
 					AcceptedScriptKey = SubmittedScriptKey
@@ -10412,8 +10462,8 @@ function Library:PromptKey(KeyPromptConfiguration)
 
 	local CurrentViewportSize = GetViewportSize()
 	KeyPromptWindow:SetGeometry({
-		WindowWidth = 460,
-		WindowVisibleHeight = 390,
+		WindowWidth = 480,
+		WindowVisibleHeight = 410,
 	})
 	KeyPromptWindow:SetGeometry({
 		PositionX = math.max(0, (CurrentViewportSize.X - Theme.WindowWidth) / 2),

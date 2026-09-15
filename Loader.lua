@@ -148,16 +148,6 @@ if not MatchingScriptConfiguration then
 	return
 end
 
-local function ShowLoaderNotification(NotificationMessage)
-	pcall(function()
-		local StarterGui = CloneReference(DataModel:GetService("StarterGui"))
-		StarterGui:SetCore("SendNotification", {
-			Title = "Contact",
-			Text = tostring(NotificationMessage),
-			Duration = 8,
-		})
-	end)
-end
 -- Cached keys are always verified by Luarmor before protected scripts execute.
 if MatchingScriptConfiguration.KeySystem == true then
 	local function LoadRemoteModule(ModuleUniformResourceLocator)
@@ -230,10 +220,10 @@ if MatchingScriptConfiguration.KeySystem == true then
 	end
 
 	local SavedKeyFolderPath = "Contact"
-	local SavedKeyFilePath = SavedKeyFolderPath .. "/Key"
+	local SavedKeyFilePath = string.format("%s/Key", SavedKeyFolderPath)
 	-- Separate from configuration encryption. Local reversible protection cannot
 	-- hide the key from someone who controls this device and this loader.
-	local KeyStorageEncryptionSecret = "Contact|ProjectAccess|StorageV1|7B29D4E18C63A05F"
+	local KeyStorageEncryptionSecret = "m<.Tg3~;[eBZ;,OmxyZm~+_voedGu6QgpnWmB]8Lo=?)w6Xe,}n@g<lL–);)*:}@"
 
 	local function TransformKeyStorageByte(InputByte, SecretByte)
 		local TransformedByte = 0
@@ -251,7 +241,7 @@ if MatchingScriptConfiguration.KeySystem == true then
 
 	local function EncryptStoredKey(PlainScriptKey)
 		local EncodedBytes = {}
-		local StoragePayload = "ContactKeyV1:" .. PlainScriptKey
+		local StoragePayload = string.format("Contact:%s", PlainScriptKey)
 		for ByteIndex = 1, #StoragePayload do
 			local SecretByteIndex = (ByteIndex - 1) % #KeyStorageEncryptionSecret + 1
 			EncodedBytes[ByteIndex] = string.format("%02x", TransformKeyStorageByte(
@@ -279,7 +269,7 @@ if MatchingScriptConfiguration.KeySystem == true then
 			))
 		end
 
-		return table.concat(DecodedBytes):match("^ContactKeyV1:(.+)$")
+		return table.concat(DecodedBytes):match("^Contact:(.+)$")
 	end
 
 	local ScriptKeyText = type(script_key) == "string" and script_key or ""
@@ -317,7 +307,6 @@ if MatchingScriptConfiguration.KeySystem == true then
 			"https://raw.githubusercontent.com/contact-here/Contact/refs/heads/main/Library.lua"
 		)
 		if type(InterfaceLibrary) ~= "table" then
-			ShowLoaderNotification("Could not load the key interface. Check your connection and retry.")
 			return
 		end
 
@@ -341,13 +330,11 @@ if MatchingScriptConfiguration.KeySystem == true then
 		})
 
 		pcall(InterfaceLibrary.Destroy, InterfaceLibrary)
+
 		if not KeyPromptSucceeded then
-			ShowLoaderNotification("The key interface could not start on this executor. Update it and retry.")
 			return
 		end
-		if KeyPromptFailureMessage then
-			ShowLoaderNotification(KeyPromptFailureMessage)
-		end
+
 		if type(AcceptedScriptKey) ~= "string" or AcceptedScriptKey == "" then
 			return
 		end
@@ -374,10 +361,7 @@ if MatchingScriptConfiguration.KeySystem == true then
 			pcall(makefolder, SavedKeyFolderPath)
 		end
 
-		local KeyWriteSucceeded = pcall(writefile, SavedKeyFilePath, EncryptStoredKey(ScriptKeyText))
-		if not KeyWriteSucceeded then
-			ShowLoaderNotification("Key accepted, but could not be saved. You may need to enter it next time.")
-		end
+		pcall(writefile, SavedKeyFilePath, EncryptStoredKey(ScriptKeyText))
 	end
 end
 local ScriptUniformResourceLocator = string.format(
@@ -386,7 +370,6 @@ local ScriptUniformResourceLocator = string.format(
 )
 local ScriptSource = FetchLink(ScriptUniformResourceLocator)
 if type(ScriptSource) ~= "string" or ScriptSource == "" or type(loadstring) ~= "function" then
-	ShowLoaderNotification("Could not download the script, or this executor cannot run it.")
 	return
 end
 
@@ -395,12 +378,10 @@ end
 -- itself or accidentally falling through to another configuration entry.
 local ScriptCompilationSucceeded, CompiledScript = pcall(loadstring, ScriptSource)
 if not ScriptCompilationSucceeded or type(CompiledScript) ~= "function" then
-	ShowLoaderNotification("The script could not be prepared. Please retry later.")
 	return
 end
 
 local ScriptExecutionSucceeded, ScriptExecutionResult = pcall(CompiledScript)
 if not ScriptExecutionSucceeded then
-	ShowLoaderNotification("The script could not start. Please retry or contact support.")
 	return
 end

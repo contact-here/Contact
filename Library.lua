@@ -77,6 +77,9 @@ local UserInputService, RunService, ContextActionService,
 	GraphicalUserInterfaceService, CoreGui, Workspace
 local DrawingLibrary = Drawing
 local WriteClipboardText = setclipboard or toclipboard or set_clipboard
+if type(WriteClipboardText) == "function" then
+	WriteClipboardText = CloneFunction(WriteClipboardText)
+end
 local DataModel = CloneReference(game)
 local GetService, IsDataModelLoaded, DataModelLoadedSignal, WaitForDataModelLoaded,
 	CreateInstance, DestroyInstance, FindFirstChild, GetPropertyChangedSignal, ConnectSignal =
@@ -10299,6 +10302,133 @@ function Library:SetInputBlocking(Type, Enabled)
 		end
 	end
 	return true
+end
+
+-- A standalone prompt uses the same rendering, input and cleanup as script windows.
+-- Use a dedicated Library instance because window geometry shares theme metrics.
+function Library:PromptKey(KeyPromptConfiguration)
+	if type(KeyPromptConfiguration) ~= "table"
+		or type(KeyPromptConfiguration.ValidateScriptKey) ~= "function"
+	then
+		return nil
+	end
+
+	local KeyPromptFinished = false
+	local AcceptedScriptKey
+	local KeyVerificationInProgress = false
+	local KeyPromptWindow = self:CreateWindow({
+		Title = "Contact",
+		Description = "Key system",
+		ShowTouchLauncher = false,
+	})
+
+	KeyPromptWindow.OnExit = function()
+		KeyPromptFinished = true
+	end
+
+	local KeyProviderSection = KeyPromptWindow:CreateSection({
+		Title = "Get your key",
+	})
+	local VerificationStatusLabel = KeyProviderSection:CreateTextLabel({
+		Text = KeyPromptConfiguration.InitialStatusMessage
+			or "Choose a provider, then paste your key below.",
+	})
+	local ProviderLinkTextBox
+
+	for ProviderIndex, KeyProviderConfiguration in ipairs(KeyPromptConfiguration.KeyProviders or {}) do
+		KeyProviderSection:CreateTextButton({
+			Text = KeyProviderConfiguration.DisplayName,
+			Callback = function()
+				local ClipboardWriteSucceeded = self.CopyTextToClipboard(
+					KeyProviderConfiguration.UniformResourceLocator
+				)
+				ProviderLinkTextBox:SetValue(KeyProviderConfiguration.UniformResourceLocator)
+
+				if ClipboardWriteSucceeded then
+					VerificationStatusLabel:SetText(
+						KeyProviderConfiguration.DisplayName .. " link copied. Open it in your browser."
+					)
+				else
+					VerificationStatusLabel:SetText("Clipboard unavailable. Copy the link below manually.")
+				end
+			end,
+		})
+	end
+
+	ProviderLinkTextBox = KeyProviderSection:CreateTextBox({
+		Text = "Link",
+		Placeholder = "Provider link",
+		Default = "",
+	})
+	local ScriptKeyTextBox = KeyProviderSection:CreateTextBox({
+		Text = "Key",
+		Placeholder = "Paste your key",
+		Default = "",
+	})
+	local VerifyScriptKeyButton
+
+	VerifyScriptKeyButton = KeyProviderSection:CreateTextButton({
+		Text = "Verify key",
+		Callback = function()
+			if KeyVerificationInProgress or KeyPromptFinished then
+				return
+			end
+
+			local SubmittedScriptKey = tostring(ScriptKeyTextBox:GetValue() or ""):match("^%s*(.-)%s*$")
+			if SubmittedScriptKey == "" then
+				VerificationStatusLabel:SetText("Enter your key first.")
+				return
+			end
+
+			KeyVerificationInProgress = true
+			VerifyScriptKeyButton:SetText("Checking key...")
+			VerificationStatusLabel:SetText("Checking key...")
+
+			task.spawn(function()
+				local KeyVerificationSucceeded, ScriptKeyIsValid, KeyVerificationMessage = pcall(
+					KeyPromptConfiguration.ValidateScriptKey,
+					SubmittedScriptKey
+				)
+				if KeyPromptFinished then
+					return
+				end
+
+				KeyVerificationInProgress = false
+				VerifyScriptKeyButton:SetText("Verify key")
+
+				if KeyVerificationSucceeded and ScriptKeyIsValid == true then
+					AcceptedScriptKey = SubmittedScriptKey
+					KeyPromptFinished = true
+				elseif KeyVerificationSucceeded then
+					VerificationStatusLabel:SetText(
+						tostring(KeyVerificationMessage or "Key rejected. Please try again.")
+					)
+				else
+					VerificationStatusLabel:SetText("Verification failed. Please retry.")
+				end
+			end)
+		end,
+	})
+
+	local CurrentViewportSize = GetViewportSize()
+	KeyPromptWindow:SetGeometry({
+		WindowWidth = 460,
+		WindowVisibleHeight = 390,
+	})
+	KeyPromptWindow:SetGeometry({
+		PositionX = math.max(0, (CurrentViewportSize.X - Theme.WindowWidth) / 2),
+		PositionY = math.max(
+			0,
+			(CurrentViewportSize.Y - Theme.TitleBarHeight - Theme.WindowVisibleHeight) / 2
+		),
+	})
+
+	while not KeyPromptFinished do
+		task.wait(0.1)
+	end
+
+	KeyPromptWindow:Destroy()
+	return AcceptedScriptKey
 end
 
 return Library

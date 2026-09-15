@@ -12,7 +12,6 @@
 
 	Quick start:
 
-	    local Library = loadstring(readfile("Library.lua"))()
 	    local Window  = Library:CreateWindow({
 	        Title    = "My Tool",
 	        Position = Vector2.new(120, 120),

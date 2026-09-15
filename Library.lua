@@ -3745,6 +3745,17 @@ function Library:CreateWindow(WindowConfiguration)
 
 			local NativeFocusLostSignal = NativeTextInputTextBox.FocusLost
 			local NativeFocusLostConnection = ConnectNativeTextInputSignal(NativeFocusLostSignal, function(EnterPressed)
+				-- A release from the previous editing session must not clear the next one.
+				if NativeTextInputState.FocusCapturePending then
+					return
+				end
+				local FocusReadSucceeded, NativeEditorIsFocused = pcall(
+					NativeTextInputTextBox.IsFocused,
+					NativeTextInputTextBox
+				)
+				if FocusReadSucceeded and NativeEditorIsFocused then
+					return
+				end
 				local TargetElement = NativeTextInputState.TargetElement
 				if EnterPressed
 					and TargetElement
@@ -3849,52 +3860,57 @@ function Library:CreateWindow(WindowConfiguration)
 		local NativeTextInputState = Window._NativeTextInputState
 		if not NativeTextInputState
 			or not NativeTextInputState.Available
-			or not TargetElement then
+			or not TargetElement
+		then
 			return false
 		end
 
+		-- Invalidate older deferred captures before releasing the previous editor.
+		NativeTextInputState.FocusGeneration = (NativeTextInputState.FocusGeneration or 0) + 1
+		local FocusGeneration = NativeTextInputState.FocusGeneration
 		local NativeTextInputTextBox = NativeTextInputState.TextBox
-		NativeTextInputState.TargetElement = TargetElement
-		NativeTextInputState.Synchronizing = true
-		NativeTextInputTextBox.Text = tostring(TargetElement._Value or "")
-		NativeTextInputTextBox.PlaceholderText = tostring(TargetElement._Placeholder or "")
-		NativeTextInputTextBox.CursorPosition = ClampTextBoxCursorIndex(TargetElement, TargetElement._CursorIndex)
-		if TargetElement._IsSelected then
-			NativeTextInputTextBox.SelectionStart = ClampTextBoxCursorIndex(
-				TargetElement,
-				TargetElement._SelectionAnchorIndex or TargetElement._SelectionStartIndex
-			)
-		else
-			NativeTextInputTextBox.SelectionStart = -1
-		end
-		NativeTextInputState.Synchronizing = false
-
-		-- Always clear stale Roblox focus before recapturing. Some clients keep the
-		-- hidden TextBox in a released-but-still-focused state after search closes,
-		-- which prevents the software keyboard from opening on the next search.
+		local PreviousTargetElement = NativeTextInputState.TargetElement
+		NativeTextInputState.FocusCapturePending = true
+		NativeTextInputState.TargetElement = nil
 		pcall(NativeTextInputState.ReleaseFocus, NativeTextInputTextBox, false)
+
+		if PreviousTargetElement and PreviousTargetElement ~= TargetElement then
+			PreviousTargetElement._IsFocused = false
+			PreviousTargetElement._CursorVisible = false
+			PreviousTargetElement._SelectionDragging = false
+			ClearTextBoxSelection(PreviousTargetElement)
+		end
+
+		NativeTextInputState.TargetElement = TargetElement
 		task.defer(function()
 			task.wait()
-			if not Window._Destroyed
-				and Window._Visible
-				and Library._Visible
-				and NativeTextInputState.TargetElement == TargetElement then
-				local FocusCaptureSucceeded = pcall(
-					NativeTextInputState.CaptureFocus,
-					NativeTextInputTextBox
-				)
-				if not FocusCaptureSucceeded then
-					-- There is intentionally no manual keyboard editor. If the
-					-- executor cannot focus Roblox's native TextBox, return the
-					-- Drawing control to an honest unfocused state.
-					NativeTextInputState.TargetElement = nil
-					TargetElement._IsFocused = false
-					TargetElement._CursorVisible = false
-					TargetElement._SelectionDragging = false
-					ClearTextBoxSelection(TargetElement)
-					Window._ActiveTextSelectionBox = nil
-					Window:RecalculateLayout()
-				end
+			if NativeTextInputState.FocusGeneration ~= FocusGeneration then
+				return
+			end
+			if Window._Destroyed or Window._Destroying
+				or not Window._Visible or not Library._Visible
+				or NativeTextInputState.TargetElement ~= TargetElement
+			then
+				Window:ReleaseNativeTextInput(TargetElement)
+				return
+			end
+
+			NativeTextInputState.Synchronizing = true
+			local FocusCaptureSucceeded = pcall(function()
+				NativeTextInputTextBox.Text = tostring(TargetElement._Value or "")
+				NativeTextInputTextBox.PlaceholderText = tostring(TargetElement._Placeholder or "")
+				NativeTextInputState.CaptureFocus(NativeTextInputTextBox)
+				NativeTextInputTextBox.CursorPosition = ClampTextBoxCursorIndex(TargetElement, TargetElement._CursorIndex)
+				NativeTextInputTextBox.SelectionStart = TargetElement._IsSelected
+					and ClampTextBoxCursorIndex(TargetElement, TargetElement._SelectionAnchorIndex or TargetElement._SelectionStartIndex)
+					or -1
+			end)
+			NativeTextInputState.Synchronizing = false
+			NativeTextInputState.FocusCapturePending = false
+
+			if not FocusCaptureSucceeded then
+				Window:ReleaseNativeTextInput(TargetElement)
+				Window:RecalculateLayout()
 			end
 		end)
 		return true
@@ -3909,6 +3925,8 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
+		NativeTextInputState.FocusGeneration = (NativeTextInputState.FocusGeneration or 0) + 1
+		NativeTextInputState.FocusCapturePending = false
 		local CurrentTargetElement = NativeTextInputState.TargetElement
 		NativeTextInputState.TargetElement = nil
 		pcall(NativeTextInputState.ReleaseFocus, NativeTextInputState.TextBox, false)
@@ -4028,7 +4046,7 @@ function Library:CreateWindow(WindowConfiguration)
 			return
 		end
 
-		if Window._StandaloneLayout then
+		if Window._StandaloneLayout and not Window._HasUserPosition then
 			local CurrentViewportSize = GetViewportSize()
 			local TopSafeInset = Window._TouchTopInset or 0
 			Window._Position = Vector2.new(
@@ -7855,7 +7873,8 @@ function Library:CreateWindow(WindowConfiguration)
 				QueuedPrimaryClick = false
 				QueuedPrimaryClickPosition = nil
 				if TouchTarget and TouchTarget.Kind == "Title bar" then
-					Window._Dragging = not Window._StandaloneLayout
+					Window._Dragging = true
+					Window._HasUserPosition = true
 					Window._DragOffset = StartPointerPosition - TouchInteractionState.StartWindowPosition
 				elseif TouchTarget and TouchTarget.Kind == "Resize" then
 					Window._Resizing = true
@@ -8650,7 +8669,8 @@ function Library:CreateWindow(WindowConfiguration)
 			end
 
 			if Window._TitleBarHovered then
-				Window._Dragging = not Window._StandaloneLayout
+				Window._Dragging = true
+				Window._HasUserPosition = true
 				Window._DragOffset = CurrentMousePosition - Window._Position
 				RefreshInterfaceCaptureState()
 				return
@@ -10096,7 +10116,7 @@ function Library:CreateWindow(WindowConfiguration)
 		-- their actual screen instead of being shoved to a clamped corner.
 		local ShouldCenterForTouch = Window._TouchInputAvailable
 			and (not Window._ViewportScaleInitialized or not Window._HadRealViewport)
-		if ShouldCenterForTouch or Window._StandaloneLayout then
+		if ShouldCenterForTouch or (Window._StandaloneLayout and not Window._HasUserPosition) then
 			Window._Position = Vector2.new(
 				math.max(8, (Viewport.X - Theme.WindowWidth) / 2),
 				math.max(

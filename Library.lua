@@ -35,7 +35,7 @@ local CloneFunction, CloneReference, NewCClosure
 -- compatibility shims. debug.info is used directly so the capability contract
 -- cannot drift behind a cached alias.
 local function IsNativeExecutorFunction(TargetFunction)
-	if typeof(TargetFunction) ~= "function" then
+	if typeof(TargetFunction) ~= "function" or not debug or type(debug.info) ~= "function" then
 		return false
 	end
 
@@ -131,9 +131,12 @@ do
 		typeof(UserInputService.GetMouseButtonsPressed) == "function"
 			and CloneFunction(UserInputService.GetMouseButtonsPressed)
 			or function() return {} end,
-		typeof(UserInputService.GetDeviceType) == "function"
-			and CloneFunction(UserInputService.GetDeviceType)
-			or function() return "Unknown" end,
+		function()
+			local DeviceQuerySucceeded, DeviceType = pcall(function()
+				return UserInputService:GetDeviceType()
+			end)
+			return DeviceQuerySucceeded and DeviceType or "Unknown"
+		end,
 		CloneFunction(GraphicalUserInterfaceService.GetGuiInset),
 		RunService.PreRender or RunService.RenderStepped or RunService.Heartbeat,
 		CloneFunction(ContextActionService.BindCoreActionAtPriority),
@@ -225,7 +228,7 @@ if not DrawingIsNative then
 		if RawRequestFunction then
 			-- request/http_request usually provides status codes and response bodies.
 			local RequestSuccess, RequestResult = pcall(RawRequestFunction, { Url = CustomDrawingLibraryLink, Method = "GET" })
-			if RequestSuccess and RequestResult and (RequestResult.StatusCode == 200 or RequestResult.Status == 200) then
+			if RequestSuccess and type(RequestResult) == "table" and (RequestResult.StatusCode == 200 or RequestResult.Status == 200) then
 				FetchedContent = RequestResult.Body
 			end
 		end
@@ -242,8 +245,8 @@ if not DrawingIsNative then
 	if FetchedContent then
 		-- Loaded code must return a Drawing-like table before it replaces the
 		-- current backend reference.
-		local LoadedFunction = loadstring(FetchedContent)
-		if LoadedFunction then
+		local CompilationSucceeded, LoadedFunction = pcall(loadstring, FetchedContent)
+		if CompilationSucceeded and type(LoadedFunction) == "function" then
 			local ExecutionSuccess, ExecutionResult = pcall(LoadedFunction)
 			if ExecutionSuccess and typeof(ExecutionResult) == "table" and typeof(ExecutionResult.new) == "function" then
 				DrawingLibrary = ExecutionResult
@@ -289,7 +292,14 @@ if typeof(DrawingImmediate) == "table" then
 		typeof(DrawingImmediate.OutlinedText) == "function" and CloneFunction(DrawingImmediate.OutlinedText),
 		typeof(DrawingImmediate.GetPaint) == "function" and CloneFunction(DrawingImmediate.GetPaint)
 
-	if (SelectedBackend == 0 or SelectedBackend == 1) and DrawingImmediateLine then
+	if (SelectedBackend == 0 or SelectedBackend == 1)
+		and DrawingImmediateLine
+		and DrawingImmediateCircle
+		and DrawingImmediateRectangle
+		and DrawingImmediateFilledRectangle
+		and DrawingImmediateText
+		and DrawingImmediateGetPaint
+	then
 		UseImmediateMode        = true
 		DrawingBackendAvailable = true
 	end
@@ -1937,11 +1947,12 @@ end
 -- phone/tablet signal, while the viewport check covers executors that report an
 -- unknown device type on a genuinely compact touch screen.
 local function IsTouchInterfaceDevice()
-	local DetectedDeviceType = GetDeviceType(UserInputService)
-	if DetectedDeviceType == Enum.DeviceType.Phone or DetectedDeviceType == Enum.DeviceType.Tablet then
+	local DeviceDetectionSucceeded, DetectedDeviceType = pcall(GetDeviceType, UserInputService)
+	local DeviceTypeName = DeviceDetectionSucceeded and tostring(DetectedDeviceType) or "Unknown"
+	if DeviceTypeName:match("Phone$") or DeviceTypeName:match("Tablet$") then
 		return true
 	end
-	if DetectedDeviceType ~= Enum.DeviceType.Unknown and tostring(DetectedDeviceType) ~= "Unknown" then
+	if not DeviceTypeName:match("Unknown$") then
 		return false
 	end
 
@@ -3466,6 +3477,12 @@ function Library:CreateWindow(WindowConfiguration)
 			ViewportSize.Y - Theme.TitleBarHeight - ViewportMargin * 2 - TouchTopInset
 		)
 
+		if Window._StandaloneLayout then
+			Theme.WindowWidth = math.min(480, MaximumWindowWidth)
+			Theme.WindowVisibleHeight = math.min(410, MaximumVisibleBodyHeight)
+			Window._HasAppliedDeviceGeometry = true
+		end
+
 		if not Window._HasAppliedDeviceGeometry then
 			-- Landscape touch screens benefit from a compact centered tool window so
 			-- Roblox controls remain reachable around it. Portrait screens receive a
@@ -4030,10 +4047,9 @@ function Library:CreateWindow(WindowConfiguration)
 			SearchBarHeightOffset = 32
 		end
 
-		-- Only portrait touch layouts collapse to one column. Desktop windows retain
-		-- the dense two-column information layout at every permitted resize width,
-		-- matching Contact's original scan-friendly composition.
+		-- Narrow windows use one column so text and controls retain useful width.
 		local UseSingleColumnLayout = Window._UseSingleColumnLayout == true
+			or Theme.WindowWidth < 560 * (Window._CurrentViewportScale or 1)
 		local ColumnWidth = UseSingleColumnLayout
 			and (Theme.WindowWidth - Theme.InnerMargin * 2)
 			or ((Theme.WindowWidth - Theme.InnerMargin * 3) / 2)
@@ -7315,10 +7331,10 @@ function Library:CreateWindow(WindowConfiguration)
 		end
 
 		return {
-			MinimumWidth = 460,
-			MinimumVisibleHeight = 380,
-			MaximumWidth = math.max(460, ViewportSize.X - 16),
-			MaximumVisibleHeight = math.max(380, ViewportSize.Y - Theme.TitleBarHeight - 16),
+			MinimumWidth = math.min(460, math.max(180, ViewportSize.X - 16)),
+			MinimumVisibleHeight = math.min(380, math.max(120, ViewportSize.Y - Theme.TitleBarHeight - 16)),
+			MaximumWidth = math.max(180, ViewportSize.X - 16),
+			MaximumVisibleHeight = math.max(120, ViewportSize.Y - Theme.TitleBarHeight - 16),
 		}
 	end
 
@@ -10132,19 +10148,21 @@ function Library:CreateWindow(WindowConfiguration)
 		-- Roblox can rebuild the top bar after orientation, chat, menu, or safe-area
 		-- changes without changing the camera viewport. Track TopbarInset directly
 		-- so the retained launcher follows the panel just as immediate mode does.
-		local TopbarInsetChangedSignal = GetPropertyChangedSignal(
+		local TopbarSignalAvailable, TopbarInsetChangedSignal = pcall(GetPropertyChangedSignal,
 			GraphicalUserInterfaceService,
 			"TopbarInset"
 		)
-		local TopbarInsetConnection = ConnectSignal(TopbarInsetChangedSignal, NewCClosure(function()
-			-- The stored top inset is re-read live inside ApplyTouchViewportGeometry
-			-- (called by UpdateViewportScale), so a chat/menu expansion that grows
-			-- the Roblox top bar re-clamps the window into the new safe band and
-			-- republishes the launcher position through the same path.
-			UpdateViewportScale()
-			Window:RecalculateLayout()
-		end))
-		table.insert(Window._Connections, TopbarInsetConnection)
+		if TopbarSignalAvailable and TopbarInsetChangedSignal then
+			local TopbarInsetConnection = ConnectSignal(TopbarInsetChangedSignal, NewCClosure(function()
+				-- The stored top inset is re-read live inside ApplyTouchViewportGeometry
+				-- (called by UpdateViewportScale), so a chat/menu expansion that grows
+				-- the Roblox top bar re-clamps the window into the new safe band and
+				-- republishes the launcher position through the same path.
+				UpdateViewportScale()
+				Window:RecalculateLayout()
+			end))
+			table.insert(Window._Connections, TopbarInsetConnection)
+		end
 	end
 
 	ConnectViewport()
@@ -10323,6 +10341,10 @@ end
 -- A standalone prompt uses the same rendering, input and cleanup as script windows.
 -- Use a dedicated Library instance because window geometry shares theme metrics.
 function Library:PromptKey(KeyPromptConfiguration)
+	if not DrawingBackendAvailable then
+		return nil, "This executor has no compatible drawing backend. Update it or try another executor."
+	end
+
 	if type(KeyPromptConfiguration) ~= "table"
 		or type(KeyPromptConfiguration.ValidateScriptKey) ~= "function"
 	then
@@ -10448,7 +10470,7 @@ function Library:PromptKey(KeyPromptConfiguration)
 					AcceptedScriptKey = SubmittedScriptKey
 					KeyPromptFinished = true
 				elseif KeyVerificationSucceeded then
-					VerificationStatusLabel:SetText(
+					ShowKeyVerificationFailure(
 						tostring(KeyVerificationMessage or "Key rejected. Please try again.")
 					)
 				else

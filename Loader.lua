@@ -1,5 +1,3 @@
--- Contact loader configuration.
---
 -- Every table entry describes one supported Roblox experience. The loader
 -- compares both identifiers because several places can belong to one game,
 -- while a place identifier alone does not document that relationship as
@@ -9,12 +7,14 @@ local GameScriptConfigurations = {
 	{
 		RequiredGameIdentifier = 7326934954,
 		RequiredPlaceIdentifier = 126509999114328,
-		ScriptUniformResourceLocator = "https://api.luarmor.net/files/v4/loaders/b97820e6e01f226d0008bb53b38a37b3.lua",
+		ScriptIdentifier = "b97820e6e01f226d0008bb53b38a37b3",
+		KeySystem = true,
 	},
 	{
 		RequiredGameIdentifier = 66654135,
 		RequiredPlaceIdentifier = 142823291,
-		ScriptUniformResourceLocator = "https://api.luarmor.net/files/v4/loaders/b1d9c28e83468d6e0aba05732cf9a9ce.lua",
+		ScriptIdentifier = "b1d9c28e83468d6e0aba05732cf9a9ce",
+		KeySystem = false,
 	}
 }
 
@@ -148,8 +148,245 @@ if not MatchingScriptConfiguration then
 	return
 end
 
-local ScriptSource = FetchLink(MatchingScriptConfiguration.ScriptUniformResourceLocator)
+local function ShowLoaderNotification(NotificationMessage)
+	pcall(function()
+		local StarterGui = CloneReference(DataModel:GetService("StarterGui"))
+		StarterGui:SetCore("SendNotification", {
+			Title = "Contact",
+			Text = tostring(NotificationMessage),
+			Duration = 8,
+		})
+	end)
+end
+-- Cached keys are always verified by Luarmor before protected scripts execute.
+if MatchingScriptConfiguration.KeySystem == true then
+	local function LoadRemoteModule(ModuleUniformResourceLocator)
+		local ModuleSource = FetchLink(ModuleUniformResourceLocator)
+		if type(ModuleSource) ~= "string"
+			or ModuleSource == ""
+			or type(loadstring) ~= "function"
+		then
+			return nil
+		end
+
+		local ModuleCompilationSucceeded, CompiledModule = pcall(loadstring, ModuleSource)
+		if not ModuleCompilationSucceeded or type(CompiledModule) ~= "function" then
+			return nil
+		end
+
+		local ModuleExecutionSucceeded, ModuleResult = pcall(CompiledModule)
+		if ModuleExecutionSucceeded then
+			return ModuleResult
+		end
+
+		return nil
+	end
+
+	local KeyVerificationMessages = {
+		KEY_EXPIRED = "Your key has expired. Get a new key from a provider.",
+		KEY_BANNED = "Your key is blocked. Contact @contactbyfron in https://discord.gg/contactinghere or contact@contactinghere.lol email for help.",
+		KEY_HWID_LOCKED = "This key belongs to another device. Reset your HWID using the bot or key page.",
+		KEY_INCORRECT = "This key does not exist or was deleted. Check it or get a new key.",
+		KEY_INVALID = "Invalid key format. Paste the complete key without extra characters.",
+		SCRIPT_ID_INCORRECT = "This script is unavailable. Contact the script owner.",
+		SCRIPT_ID_INVALID = "The script identifier is misconfigured. Contact the script owner.",
+		INVALID_EXECUTOR = "Unsupported executor or invalid device information. Update your executor or try another.",
+		SECURITY_ERROR = "Luarmor could not verify this request. Please retry later.",
+		TIME_ERROR = "Check your device date and time, then retry. The request may have timed out.",
+		UNKNOWN_ERROR = "Luarmor is temporarily unavailable. Please retry later.",
+	}
+	local KeyVerificationLibrary
+
+	local function ValidateScriptKey(ScriptKeyText)
+		if not KeyVerificationLibrary then
+			KeyVerificationLibrary = LoadRemoteModule("https://sdkapi-public.luarmor.net/library.lua")
+			if type(KeyVerificationLibrary) ~= "table"
+				or type(KeyVerificationLibrary.check_key) ~= "function"
+			then
+				KeyVerificationLibrary = nil
+				return false, "Cannot reach Luarmor. Please retry."
+			end
+
+			-- These lowercase fields belong to the external Luarmor SDK contract.
+			KeyVerificationLibrary.script_id = MatchingScriptConfiguration.ScriptIdentifier
+		end
+
+		local KeyVerificationSucceeded, KeyVerificationResponse = pcall(
+			KeyVerificationLibrary.check_key,
+			ScriptKeyText
+		)
+		if not KeyVerificationSucceeded or type(KeyVerificationResponse) ~= "table" then
+			return false, "Network error. Please retry."
+		end
+
+		if KeyVerificationResponse.code == "KEY_VALID" then
+			return true
+		end
+
+		local VerificationStatusCode = tostring(KeyVerificationResponse.code or "UNKNOWN_ERROR")
+		local VerificationStatusMessage = KeyVerificationMessages[VerificationStatusCode]
+			or "Unexpected verification error. Please retry or contact support."
+		return false, VerificationStatusMessage
+	end
+
+	local SavedKeyFolderPath = "Contact"
+	local SavedKeyFilePath = SavedKeyFolderPath .. "/Key"
+	-- Separate from configuration encryption. Local reversible protection cannot
+	-- hide the key from someone who controls this device and this loader.
+	local KeyStorageEncryptionSecret = "Contact|ProjectAccess|StorageV1|7B29D4E18C63A05F"
+
+	local function TransformKeyStorageByte(InputByte, SecretByte)
+		local TransformedByte = 0
+		local CurrentBitValue = 1
+		for BitIndex = 1, 8 do
+			if InputByte % 2 ~= SecretByte % 2 then
+				TransformedByte = TransformedByte + CurrentBitValue
+			end
+			InputByte = math.floor(InputByte / 2)
+			SecretByte = math.floor(SecretByte / 2)
+			CurrentBitValue = CurrentBitValue * 2
+		end
+		return TransformedByte
+	end
+
+	local function EncryptStoredKey(PlainScriptKey)
+		local EncodedBytes = {}
+		local StoragePayload = "ContactKeyV1:" .. PlainScriptKey
+		for ByteIndex = 1, #StoragePayload do
+			local SecretByteIndex = (ByteIndex - 1) % #KeyStorageEncryptionSecret + 1
+			EncodedBytes[ByteIndex] = string.format("%02x", TransformKeyStorageByte(
+				string.byte(StoragePayload, ByteIndex),
+				string.byte(KeyStorageEncryptionSecret, SecretByteIndex)
+			))
+		end
+		return table.concat(EncodedBytes)
+	end
+
+	local function DecryptStoredKey(EncryptedKeyText)
+		if type(EncryptedKeyText) ~= "string" or #EncryptedKeyText > 4096
+			or #EncryptedKeyText % 2 ~= 0 or EncryptedKeyText:find("[^%x]")
+		then
+			return nil
+		end
+
+		local DecodedBytes = {}
+		for CharacterIndex = 1, #EncryptedKeyText, 2 do
+			local ByteIndex = (CharacterIndex + 1) / 2
+			local SecretByteIndex = (ByteIndex - 1) % #KeyStorageEncryptionSecret + 1
+			DecodedBytes[ByteIndex] = string.char(TransformKeyStorageByte(
+				tonumber(EncryptedKeyText:sub(CharacterIndex, CharacterIndex + 1), 16),
+				string.byte(KeyStorageEncryptionSecret, SecretByteIndex)
+			))
+		end
+
+		return table.concat(DecodedBytes):match("^ContactKeyV1:(.+)$")
+	end
+
+	local ScriptKeyText = type(script_key) == "string" and script_key or ""
+	if ScriptKeyText == "" and type(getgenv) == "function" then
+		local EnvironmentReadSucceeded, ExecutorEnvironment = pcall(getgenv)
+		if EnvironmentReadSucceeded and type(ExecutorEnvironment) == "table"
+			and type(ExecutorEnvironment.script_key) == "string"
+		then
+			ScriptKeyText = ExecutorEnvironment.script_key
+		end
+	end
+	ScriptKeyText = ScriptKeyText:match("^%s*(.-)%s*$")
+
+	local KeyStorageReadMessage
+	if ScriptKeyText == "" and type(readfile) == "function" then
+		local SavedKeyReadSucceeded, SavedKeyText = pcall(readfile, SavedKeyFilePath)
+		if SavedKeyReadSucceeded then
+			local DecryptedScriptKey = DecryptStoredKey(SavedKeyText)
+			if DecryptedScriptKey then
+				ScriptKeyText = DecryptedScriptKey:match("^%s*(.-)%s*$")
+			else
+				KeyStorageReadMessage = "The saved key file is damaged. Enter your key again."
+			end
+		end
+	end
+
+	local ScriptKeyIsValid = false
+	local KeyVerificationMessage = KeyStorageReadMessage
+	if ScriptKeyText ~= "" then
+		ScriptKeyIsValid, KeyVerificationMessage = ValidateScriptKey(ScriptKeyText)
+	end
+
+	if not ScriptKeyIsValid then
+		local InterfaceLibrary = LoadRemoteModule(
+			"https://raw.githubusercontent.com/contact-here/Contact/refs/heads/main/Library.lua"
+		)
+		if type(InterfaceLibrary) ~= "table" then
+			ShowLoaderNotification("Could not load the key interface. Check your connection and retry.")
+			return
+		end
+
+		local KeyPromptSucceeded, AcceptedScriptKey, KeyPromptFailureMessage = pcall(InterfaceLibrary.PromptKey, InterfaceLibrary, {
+			ValidateScriptKey = ValidateScriptKey,
+			InitialStatusMessage = KeyVerificationMessage,
+			KeyProviders = {
+				{
+					DisplayName = "Work.ink",
+					UniformResourceLocator = "https://ads.luarmor.net/get_key?for=Contact-lrOhEEUAtinP",
+				},
+				{
+					DisplayName = "Linkvertise",
+					UniformResourceLocator = "https://ads.luarmor.net/get_key?for=Contact-YfrTPtrjfoJO",
+				},
+				{
+					DisplayName = "Lootlabs",
+					UniformResourceLocator = "https://ads.luarmor.net/get_key?for=Contact-FdofVyJivbDh",
+				},
+			},
+		})
+
+		pcall(InterfaceLibrary.Destroy, InterfaceLibrary)
+		if not KeyPromptSucceeded then
+			ShowLoaderNotification("The key interface could not start on this executor. Update it and retry.")
+			return
+		end
+		if KeyPromptFailureMessage then
+			ShowLoaderNotification(KeyPromptFailureMessage)
+		end
+		if type(AcceptedScriptKey) ~= "string" or AcceptedScriptKey == "" then
+			return
+		end
+
+		ScriptKeyText = AcceptedScriptKey
+	end
+
+	-- Luarmor requires this exact global name before its loader executes.
+	script_key = ScriptKeyText
+	if type(getgenv) == "function" then
+		local EnvironmentReadSucceeded, ExecutorEnvironment = pcall(getgenv)
+		if EnvironmentReadSucceeded and type(ExecutorEnvironment) == "table" then
+			ExecutorEnvironment.script_key = ScriptKeyText
+		end
+	end
+
+	if type(writefile) == "function" then
+		local KeyFolderAvailable = false
+		if type(isfolder) == "function" then
+			local FolderCheckSucceeded, FolderExists = pcall(isfolder, SavedKeyFolderPath)
+			KeyFolderAvailable = FolderCheckSucceeded and FolderExists == true
+		end
+		if not KeyFolderAvailable and type(makefolder) == "function" then
+			pcall(makefolder, SavedKeyFolderPath)
+		end
+
+		local KeyWriteSucceeded = pcall(writefile, SavedKeyFilePath, EncryptStoredKey(ScriptKeyText))
+		if not KeyWriteSucceeded then
+			ShowLoaderNotification("Key accepted, but could not be saved. You may need to enter it next time.")
+		end
+	end
+end
+local ScriptUniformResourceLocator = string.format(
+	"https://api.luarmor.net/files/v4/loaders/%s.lua",
+	MatchingScriptConfiguration.ScriptIdentifier
+)
+local ScriptSource = FetchLink(ScriptUniformResourceLocator)
 if type(ScriptSource) ~= "string" or ScriptSource == "" or type(loadstring) ~= "function" then
+	ShowLoaderNotification("Could not download the script, or this executor cannot run it.")
 	return
 end
 
@@ -158,10 +395,12 @@ end
 -- itself or accidentally falling through to another configuration entry.
 local ScriptCompilationSucceeded, CompiledScript = pcall(loadstring, ScriptSource)
 if not ScriptCompilationSucceeded or type(CompiledScript) ~= "function" then
+	ShowLoaderNotification("The script could not be prepared. Please retry later.")
 	return
 end
 
 local ScriptExecutionSucceeded, ScriptExecutionResult = pcall(CompiledScript)
 if not ScriptExecutionSucceeded then
+	ShowLoaderNotification("The script could not start. Please retry or contact support.")
 	return
 end
